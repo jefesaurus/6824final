@@ -49,6 +49,11 @@ type Paxos struct {
   minsLock sync.Mutex
 
   prevDone int
+
+  PingTimes map[int]time.Time
+  Leader bool
+  PingLock sync.Mutex
+  LeaderLock sync.Mutex
 }
 
 func call(srv string, name string, args interface{}, reply interface{}) bool {
@@ -71,8 +76,72 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
   return false
 }
 
-func (px *Paxos) Start(seq int, val interface{}) {
-  go px.DoPaxos(seq, val)
+const (
+  PING_INTERVAL = time.Second * 5
+  LEADER_LEASE = PING_INTERVAL * 2
+)
+
+func (px *Paxos) MultiPaxos() {
+  for true {
+    if px.dead {
+      return
+    }
+
+    for index, server := range px.peers {
+      reply := &PingReply{}
+      ok := call(server, "Paxos.Ping", &PingArgs{px.me}, reply)
+      if ok && reply.OK { //This should be ok assuming communciation is bidirectional
+        px.PingLock.Lock()
+        px.PingTimes[index] = time.Now()
+        px.PingLock.Unlock()
+      }
+    }
+ 
+    reply := &LeaderReply{}
+    px.DetermineLeader(&LeaderArgs{}, reply)
+    
+    px.LeaderLock.Lock()
+    if px.Leader && reply.Leader != px.me {
+      px.Leader = false;
+    }
+
+    if reply.Leader == px.me {
+      px.Leader = true;
+    }
+    px.LeaderLock.Unlock()
+    time.Sleep(PING_INTERVAL)
+  }
+}
+
+func (px *Paxos) Ping(args *PingArgs, reply *PingReply) error {
+  //TODO acquire lock
+  px.PingLock.Lock()
+  px.PingTimes[args.Me] = time.Now()
+  px.PingLock.Unlock()
+  reply.OK = true  
+  return nil 
+}
+
+func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) {
+  now := time.Now()
+  leader := -1
+  for key, val := range px.PingTimes {
+    if val.Add(LEADER_LEASE).Before(now) && key > leader {
+      leader = key
+    } 
+  }
+  reply.Leader = leader
+}
+
+func (px *Paxos) Start(seq int, val interface{}) bool {
+  px.LeaderLock.Lock()
+  defer px.LeaderLock.Unlock()
+  if px.Leader {
+    go px.DoPaxos(seq, val)
+    return true
+  } else {
+    return false
+  }
 }
 
 
@@ -369,7 +438,15 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   }
   px.majority = len(px.peers)/2
   px.prevDone = -1
-
+  px.PingTimes = make(map[int]time.Time)
+  for index, _ := range px.peers {
+    px.PingTimes[index] = time.Now()
+  }
+  if px.me + 1 == len(px.peers) {
+    px.Leader = true
+  } else {
+    px.Leader = false
+  }
   if rpcs != nil {
     // caller will create socket &c
     rpcs.Register(px)

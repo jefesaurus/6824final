@@ -10,6 +10,21 @@ type Instance struct {
   mu sync.Mutex
 }
 
+type PingArgs struct {
+  Me int
+}
+
+type PingReply struct {
+  OK bool
+}
+
+type LeaderArgs struct {
+}
+
+type LeaderReply struct {
+  Leader int
+}
+
 type AcceptArgs struct {
   Me int
   Seq int
