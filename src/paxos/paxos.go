@@ -53,7 +53,7 @@ type Paxos struct {
   PingTimes map[int]time.Time
   Leader bool
   PingLock sync.Mutex
-  LeaderLock sync.Mutex
+  LeaderLock sync.RWMutex
 }
 
 func call(srv string, name string, args interface{}, reply interface{}) bool {
@@ -79,24 +79,44 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 const (
   PING_INTERVAL = time.Second * 5
   LEADER_LEASE = PING_INTERVAL * 2
+  PING_TIMEOUT = time.Millisecond * 100
+  PAXOS_TIMEOUT = time.Second
 )
 
 func (px *Paxos) MultiPaxos() {
+  go func() {
   for true {
     if px.dead {
       return
     }
 
     for index, server := range px.peers {
+      if index == px.me {
+        continue
+      }
       reply := &PingReply{}
-      ok := call(server, "Paxos.Ping", &PingArgs{px.me}, reply)
-      if ok && reply.OK { //This should be ok assuming communciation is bidirectional
-        px.PingLock.Lock()
-        px.PingTimes[index] = time.Now()
-        px.PingLock.Unlock()
+      rpc := make(chan bool, 1)
+      go func() { rpc <- call(server, "Paxos.Ping", &PingArgs{px.me}, reply)} ()
+      select {
+        case ok := <- rpc:
+          if ok && reply.OK { //This should be ok assuming communciation is bidirectional
+            px.PingLock.Lock()
+            px.PingTimes[index] = time.Now()
+            px.PingLock.Unlock()
+          }
+        case <-time.After(PING_TIMEOUT):
       }
     }
  
+    time.Sleep(PING_INTERVAL)
+  }
+  }()
+  go func() {
+  for true {
+    if px.dead {
+      return
+    }
+    
     reply := &LeaderReply{}
     px.DetermineLeader(&LeaderArgs{}, reply)
     
@@ -111,6 +131,7 @@ func (px *Paxos) MultiPaxos() {
     px.LeaderLock.Unlock()
     time.Sleep(PING_INTERVAL)
   }
+  }()
 }
 
 func (px *Paxos) Ping(args *PingArgs, reply *PingReply) error {
@@ -122,21 +143,26 @@ func (px *Paxos) Ping(args *PingArgs, reply *PingReply) error {
   return nil 
 }
 
-func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) {
+func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) error {
   now := time.Now()
   leader := -1
   for key, val := range px.PingTimes {
-    if val.Add(LEADER_LEASE).Before(now) && key > leader {
+    if val.Add(LEADER_LEASE).After(now) && key > leader {
       leader = key
     } 
   }
+  if leader < px.me {
+    leader = px.me
+  }
   reply.Leader = leader
+  return nil
 }
 
 func (px *Paxos) Start(seq int, val interface{}) bool {
-  px.LeaderLock.Lock()
-  defer px.LeaderLock.Unlock()
-  if px.Leader {
+  px.LeaderLock.RLock()
+  leader := px.Leader
+  px.LeaderLock.RUnlock()
+  if leader {
     go px.DoPaxos(seq, val)
     return true
   } else {
@@ -175,21 +201,32 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
       args := PrepareArgs{Seq: seq, Num: proposalNum, Me: px.me}
       var reply PrepareReply
       ok := true
+      rpc := make(chan bool, 1)
       if peerIndex == px.me {
         px.Prepare(&args, &reply)
+        if ok && reply.Ok {
+          numPrepareOks ++
+          if reply.Num > maxProposalNum {
+            maxProposalNum = reply.Num
+            maxProposalVal = reply.Val
+          }
+        }
       } else {
-        ok = call(px.peers[peerIndex], "Paxos.Prepare", &args, &reply)
-      }
-      if ok && reply.Ok {
-        numPrepareOks ++
-        if reply.Num > maxProposalNum {
-          maxProposalNum = reply.Num
-          maxProposalVal = reply.Val
+        go func() { rpc <- call(px.peers[peerIndex], "Paxos.Prepare", &args, &reply) }()
+        select {
+          case ok = <- rpc:
+            if ok && reply.Ok {
+              numPrepareOks ++
+              if reply.Num > maxProposalNum {
+                maxProposalNum = reply.Num
+                maxProposalVal = reply.Val
+              }
+            }
+            px.UpdateMins(peerIndex, reply.Done)
+          case <-time.After(PAXOS_TIMEOUT):
         }
       }
-      px.UpdateMins(peerIndex, reply.Done)
     }
-
     /*
     if prepare_ok(n_a, v_a) from majority:
       v' = v_a with highest n_a; choose own v otherwise
@@ -200,19 +237,29 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
         args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.mins[px.me], Me: px.me}
         var reply AcceptReply
         ok := true
+        rpc := make(chan bool, 1)
         if peerIndex == px.me {
           px.Accept(&args, &reply)
+          if ok && reply.Ok {
+            numAcceptOks ++
+          }
+          px.UpdateMins(peerIndex, reply.Done)
         } else {
-          ok = call(px.peers[peerIndex], "Paxos.Accept", &args, &reply)
+          go func() { rpc <- call(px.peers[peerIndex], "Paxos.Accept", &args, &reply) }()
+          select {
+            case ok = <- rpc:
+              if ok && reply.Ok {
+                numAcceptOks ++
+              }
+              px.UpdateMins(peerIndex, reply.Done)
+            case <-time.After(PAXOS_TIMEOUT):
+          }
         }
-        if ok && reply.Ok {
-          numAcceptOks ++
-        }
-        px.UpdateMins(peerIndex, reply.Done)
       }
 
       if numAcceptOks > px.majority {
         px.SendDecides(seq, proposalNum, maxProposalVal)
+        return
       }
     }
     time.Sleep(10 * time.Millisecond)
@@ -259,6 +306,7 @@ func (px *Paxos) GetInstance(seq int) *Instance {
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
+  px.UpdateMins(args.Me, args.Done)
   px.UpdateMax(args.Seq)
 
   instance := px.GetInstance(args.Seq)
@@ -497,6 +545,6 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
       }
     }()
   }
-
+  go px.MultiPaxos()
   return px
 }
