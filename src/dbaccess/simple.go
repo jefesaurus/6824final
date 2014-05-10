@@ -6,6 +6,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 	"log"
 	"os"
+  "strconv"
 )
 
 func main() {
@@ -18,15 +19,18 @@ func main() {
 	defer db.Close()
 
 	sql := `
-	create table foo (key INTEGER NOT NULL PRIMARY KEY, value TEXT);
+	create table foo (key TEXT NOT NULL PRIMARY KEY, value TEXT);
 	delete from foo;
 	`
 	_, err = db.Exec(sql)
+  if err != nil {
+    log.Fatal(err)
+  }
 	tx, err := db.Begin()
 	stmt, err := tx.Prepare("insert into foo(key, value) values(?, ?)")
 	defer stmt.Close()
 	for i := 0; i < 100; i++ {
-		stmt.Exec(i, fmt.Sprintf("こんにちわ世界%03d", i))
+		stmt.Exec(strconv.Itoa(i), fmt.Sprintf("こんにちわ世界%03d", i))
 	}
 	tx.Commit()
 
@@ -45,9 +49,9 @@ func main() {
   stmt, err = db.Prepare("delete from foo WHERE key = ?")
   defer stmt.Close()
   for i := 0; i < 10; i ++ {
-    stmt.Exec(i)
+    stmt.Exec(strconv.Itoa(i))
   }
-	db.Exec("insert into foo(key, value) values(1, 'foo'), (2, 'bar'), (3, 'baz')")
+	db.Exec("insert into foo(key, value) values('1', 'foo'), ('2', 'bar'), ('3', 'baz')")
 
 	rows, err = db.Query("select key, value from foo")
 	defer rows.Close()
