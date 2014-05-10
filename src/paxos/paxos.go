@@ -80,7 +80,7 @@ const (
   PING_INTERVAL = time.Second * 5
   LEADER_LEASE = PING_INTERVAL * 2
   PING_TIMEOUT = time.Millisecond * 100
-  PAXOS_TIMEOUT = time.Second * 5
+  PAXOS_TIMEOUT = time.Second * 3
 )
 
 func (px *Paxos) MultiPaxos() {
@@ -158,18 +158,32 @@ func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) error {
   return nil
 }
 
-func (px *Paxos) Start(seq int, val interface{}) bool {
+func (px *Paxos) Start(seq int, val interface{}) {
   px.LeaderLock.RLock()
   leader := px.Leader
   px.LeaderLock.RUnlock()
   if leader {
     go px.DoPaxos(seq, val)
-    return true
   } else {
-    return false
+    go px.ForwardRequest(seq, val)
   }
 }
 
+func (px *Paxos) ForwardRequest(seq int, val interface{}) {
+  for true {
+    reply := &LeaderReply{}
+    px.DetermineLeader(&LeaderArgs{}, reply)
+    ok := call(px.peers[reply.Leader], "Paxos.ForwardedRequest", &ForwardedArgs{seq, val}, &ForwardedReply{})
+    if ok { 
+      return 
+    }
+  }
+}
+
+func (px *Paxos) ForwardedRequest(args *ForwardedArgs, reply *ForwardedReply) error {
+  px.Start(args.Seq, args.Val)
+  return nil
+}
 
 /*
 proposer(v):

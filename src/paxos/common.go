@@ -11,6 +11,14 @@ type Instance struct {
   multi sync.Mutex
 }
 
+type ForwardedArgs struct {
+  Seq int
+  Val interface{}
+}
+
+type ForwardedReply struct {
+}
+
 type PingArgs struct {
   Me int
 }
