@@ -80,7 +80,7 @@ const (
   PING_INTERVAL = time.Second * 5
   LEADER_LEASE = PING_INTERVAL * 2
   PING_TIMEOUT = time.Millisecond * 100
-  PAXOS_TIMEOUT = time.Second
+  PAXOS_TIMEOUT = time.Second * 5
 )
 
 func (px *Paxos) MultiPaxos() {
@@ -190,13 +190,13 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
       return
     }
     instance.mu.Unlock()
-
+    instance.multi.Lock()
     // Choose and n that is unique and higher than anything seen before
     proposalNum := (time.Now().UnixNano() << 8) + int64(px.me)
-
-    numPrepareOks := 0
-    maxProposalNum := int64(-1)
+    //numPrepareOks := 0
+    //maxProposalNum := int64(-1)
     maxProposalVal := val
+    /**
     for peerIndex, _ := range px.peers {
       args := PrepareArgs{Seq: seq, Num: proposalNum, Me: px.me}
       var reply PrepareReply
@@ -226,13 +226,13 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
           case <-time.After(PAXOS_TIMEOUT):
         }
       }
-    }
+    }**/
     /*
     if prepare_ok(n_a, v_a) from majority:
       v' = v_a with highest n_a; choose own v otherwise
     */
     numAcceptOks := 0
-    if numPrepareOks > px.majority {
+    if true { //numPrepareOks > px.majority {
       for peerIndex, _ := range px.peers {
         args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.mins[px.me], Me: px.me}
         var reply AcceptReply
@@ -259,8 +259,10 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
 
       if numAcceptOks > px.majority {
         px.SendDecides(seq, proposalNum, maxProposalVal)
+        instance.multi.Unlock()
         return
       }
+      fmt.Printf("Not enough accepts\n")
     }
     time.Sleep(10 * time.Millisecond)
   }

@@ -566,7 +566,7 @@ func TestMany(t *testing.T) {
       time.Sleep(20 * time.Millisecond)
     }
     for i := 0; i < npaxos; i++ {
-      pxa[2].Start(seq, (seq * 10) + i)
+      TryToStart(pxa, npaxos, seq, (seq * 10) + i)
     }
   }
 

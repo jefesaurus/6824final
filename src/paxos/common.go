@@ -8,6 +8,7 @@ type Instance struct {
   acceptVal interface{} // Highest accept value
   decided bool
   mu sync.Mutex
+  multi sync.Mutex
 }
 
 type PingArgs struct {
