@@ -204,6 +204,31 @@ func TestDeaf(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
+func TestThroughput(t *testing.T) {
+  runtime.GOMAXPROCS(4)
+
+  const npaxos = 5
+  var pxa []*Paxos = make([]*Paxos, npaxos)
+  var pxh []string = make([]string, npaxos)
+  defer cleanup(pxa)
+
+  for i := 0; i < npaxos; i++ {
+    pxh[i] = port("deaf", i)
+  }
+  for i := 0; i < npaxos; i++ {
+    pxa[i] = Make(pxh, i, nil)
+  }
+  s := time.Now() 
+  for i := 0; i < 50; i++ {
+    pxa[i%npaxos].Start(i,"yyy")
+  }
+  for i := 0; i < 50; i++ {
+    waitn(t, pxa, i, npaxos)
+  }
+  e := time.Now()
+  fmt.Printf("Processed %d ops in %v\n", 50, e.Sub(s))
+}
+
 func TestForget(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
