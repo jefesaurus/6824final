@@ -464,7 +464,7 @@ func (px *Paxos) SendDecides(seq int, proposalNum int64, val interface{}) {
   }
 }
 
-const USE_MEM = true
+const USE_MEM = false
 
 func (px *Paxos) GetInstance(seq int) *Instance {
   px.instanceDataLock.Lock()
@@ -474,7 +474,7 @@ func (px *Paxos) GetInstance(seq int) *Instance {
   }
   var instance *Instance
 
-  if !USE_MEM {
+  if USE_MEM {
     if _,ok := px.instances[seq]; !ok {
       px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
     }
@@ -551,9 +551,9 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 
     if USE_MEM {
       instance.PrepareNum = args.Num
+    } else {
+      px.PutInstance(args.Seq, new_inst)
     }
-
-    px.PutInstance(args.Seq, new_inst)
 
     reply.Ok = true
     reply.Num = instance.AcceptNum
@@ -586,9 +586,10 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
       instance.PrepareNum = args.Num
       instance.AcceptNum = args.Num
       instance.AcceptVal = args.Val
+    } else {
+      px.PutInstance(args.Seq, new_inst)
     }
 
-    px.PutInstance(args.Seq, new_inst)
 
     reply.Decided = instance.Decided
     reply.Num = args.Num
@@ -614,9 +615,9 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
     if USE_MEM {
       instance.AcceptVal = args.Val
       instance.Decided = true
+    } else {
+      px.PutInstance(args.Seq, new_inst)
     }
-
-    px.PutInstance(args.Seq, new_inst)
 
     reply.Ok = true
   } else {
