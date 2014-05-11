@@ -81,7 +81,7 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 
 const (
   PING_INTERVAL = time.Second * 2
-  LEADER_LEASE = PING_INTERVAL * 5
+  LEADER_LEASE = PING_INTERVAL * 3
   PING_TIMEOUT = time.Millisecond * 100
   PAXOS_TIMEOUT = time.Second * 3
 )
@@ -125,11 +125,11 @@ func (px *Paxos) MultiPaxos() {
     px.DetermineLeader(&LeaderArgs{}, reply)
     
     px.LeaderLock.Lock()
-    if px.Leader && reply.Leader != px.me {
+    if px.Leader && reply.Leader != px.me{
       px.Leader = false;
     }
 
-    if reply.Leader == px.me {
+    if reply.Leader == px.me && !px.Leader && reply.Ok {
       px.Leader = true;
       px.NewLeader = true;
       go px.GetMajorityMax()
@@ -188,13 +188,22 @@ func (px *Paxos) Ping(args *PingArgs, reply *PingReply) error {
 func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) error {
   now := time.Now()
   leader := -1
+  in_contact := 0
   for key, val := range px.PingTimes {
-    if val.Add(LEADER_LEASE).After(now) && key > leader {
-      leader = key
+    if val.Add(LEADER_LEASE).After(now) {
+      if key > leader { 
+        leader = key
+      }
+      in_contact++
     } 
   }
   if leader < px.me {
     leader = px.me
+  }
+  if in_contact > px.majority {
+    reply.Ok = true //Only a leader if we can contact a quorum
+  } else {
+    reply.Ok = false
   }
   reply.Leader = leader
   return nil

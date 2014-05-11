@@ -49,6 +49,7 @@ type LeaderArgs struct {
 
 type LeaderReply struct {
   Leader int
+  Ok bool
 }
 
 type AcceptArgs struct {
