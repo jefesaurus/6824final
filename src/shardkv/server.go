@@ -447,14 +447,14 @@ func StartServer(gid int64, shardmasters []string,
   kv.shard_record = make(map[int]map[int]map[string]string)
   kv.reply_record = make(map[int]map[int]ReplyRecord)
   kv.record_level = -1
+  kv.px = paxos.Make(servers, me, rpcs)
+  kv.min_confignums = make(map[int64]int)
 
   kv.InitNewConfig(kv.sm.Query(-1))
 
   rpcs := rpc.NewServer()
   rpcs.Register(kv)
 
-  kv.px = paxos.Make(servers, me, rpcs)
-  kv.min_confignums = make(map[int64]int)
   kv.config_to_seq = make(map[int]int)
 
   os.Remove(servers[me])
