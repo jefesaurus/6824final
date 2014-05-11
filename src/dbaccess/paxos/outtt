@@ -1,0 +1,222 @@
+Test: Single proposer ...
+0, locking status
+0, locking, getinst
+2, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+2, proposing
+2, rlocking
+2, runlocking
+1, locked status
+2, locking status
+2, locking, getinst
+0, locking, getinst
+2, locked status
+0, locked accept
+0, unlocking accept
+0, locking status
+0, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+1, locking, getinst
+1, locked status
+2, locking status
+2, locking, getinst
+2, locked status
+1, locked accept
+1, unlocking accept
+2, locking, getinst
+2, locked accept
+2, unlocking accept
+0, locking, getinst
+0, locked decided
+0, unlocking decided
+1, locking, getinst
+1, locked decided
+0, locking status
+0, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+1, unlocking decided
+2, locking, getinst
+1, locked status
+2, locking status
+2, locking, getinst
+2, locked decided
+2, unlocking decided
+2, locked status
+0, locking status
+0, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+1, locked status
+2, locking status
+2, locking, getinst
+2, locked status
+  ... Passed
+Test: Many proposers, same value ...
+0, locking status
+0, locking, getinst
+2, locking, getinst
+2, locking, getinst
+2, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+2, proposing
+2, rlocking
+2, proposing
+2, rlocking
+2, runlocking
+2, runlocking
+2, proposing
+2, rlocking
+2, runlocking
+1, locked status
+2, locking status
+2, locking, getinst
+2, locked status
+0, locking, getinst
+0, locking, getinst
+0, locking, getinst
+0, locked accept
+0, unlocking accept
+0, locked accept
+0, locking status
+0, locking, getinst
+0, unlocking accept
+0, locked accept
+1, locking, getinst
+1, locking, getinst
+1, locked accept
+0, unlocking accept
+0, locked status
+1, locking status
+1, locking, getinst
+1, unlocking accept
+1, locking, getinst
+1, locked accept
+1, unlocking accept
+1, locked status
+2, locking status
+2, locking, getinst
+1, locked accept
+2, locking, getinst
+2, locking, getinst
+2, locked status
+2, locked accept
+1, unlocking accept
+2, unlocking accept
+2, locking, getinst
+2, locked accept
+0, locking, getinst
+0, locked decided
+2, unlocking accept
+2, locked accept
+0, locking status
+0, locking, getinst
+0, unlocking decided
+0, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+1, locked status
+2, locking status
+2, locking, getinst
+0, locked decided
+0, unlocking decided
+1, locking, getinst
+1, locked decided
+1, locking, getinst
+2, unlocking accept
+2, locked status
+0, locking, getinst
+0, locked decided
+0, unlocking decided
+1, unlocking decided
+1, locking, getinst
+2, locking, getinst
+1, locked decided
+1, unlocking decided
+2, locked decided
+1, locked decided
+1, unlocking decided
+2, unlocking decided
+2, locking, getinst
+2, locking, getinst
+2, locked decided
+2, unlocking decided
+2, locked decided
+2, unlocking decided
+0, locking status
+0, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+1, locked status
+2, locking status
+2, locking, getinst
+2, locked status
+0, locking status
+0, locking, getinst
+0, locked status
+1, locking status
+1, locking, getinst
+1, locked status
+2, locking status
+2, locking, getinst
+2, locked status
+  ... Passed
+Test: Many proposers, different values ...
+0, locking status
+0, locking, getinst
+2, locking, getinst
+2, locking, getinst
+2, locking, getinst
+2, proposing
+2, rlocking
+2, runlocking
+2, proposing
+2, rlocking
+2, proposing
+2, rlocking
+2, runlocking
+2, runlocking
+0, locked status
+1, locking status
+1, locking, getinst
+1, locked status
+0, locking, getinst
+2, locking status
+2, locking, getinst
+0, locking, getinst
+0, locking, getinst
+2, locked status
+0, locked accept
+0, unlocking accept
+0, locked accept
+0, unlocking accept
+0, locked accept
+0, locking status
+0, locking, getinst
+1, locking, getinst
+1, locking, getinst
+1, locked accept
+0, unlocking accept
+0, locked status
+1, locking status
+1, locking, getinst
+1, unlocking accept
+1, locking, getinst
+1, locked accept
+1, unlocking accept
+1, locked status
+2, locking status
+2, locking, getinst
+1, locked accept
+2, locking, getinst
+2, locking, getinst
