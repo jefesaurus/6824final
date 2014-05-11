@@ -169,6 +169,54 @@ func (px *Paxos) Start(seq int, val interface{}) {
     go px.DoPaxos(seq, val)
   } else {
     go px.ForwardRequest(seq, val)
+    go func() { 
+      time.Sleep(time.Second * 2)
+      px.DetermineValue(seq)
+    }()
+  }
+}
+
+func (px *Paxos) GetValue(args *GetValueArgs, reply *GetValueReply) error {
+  instance := px.GetInstance(args.Seq)
+  px.instanceDataLock.RLock()
+  defer px.instanceDataLock.RUnlock()
+  if instance.decided {
+    reply.Val = instance.acceptVal
+    reply.OK = true
+  } else {
+    reply.OK = false
+  }
+  return nil
+}
+
+func (px *Paxos) DetermineValue(seq int) {
+  for true {
+    instance := px.GetInstance(seq)
+    px.instanceDataLock.RLock()
+    if instance.decided {
+      px.instanceDataLock.RUnlock()
+      return
+    } else {
+      for peerIndex, _ := range px.peers {
+        if peerIndex == px.me {
+          continue
+        }
+        reply := &GetValueReply{}
+        rpc := make(chan bool, 1)
+        go func() { rpc <- call(px.peers[peerIndex], "Paxos.GetValue", &GetValueArgs{seq}, reply) }()
+        select {
+          case ok := <- rpc:
+            if ok && reply.OK {
+              px.instanceDataLock.RUnlock()
+              px.Decided(&DecidedArgs{seq, (time.Now().UnixNano() << 8) + int64(px.me), reply.Val}, &DecidedReply{})
+              return
+            }
+          case <-time.After(PING_TIMEOUT):
+        }
+      }
+    }
+    px.instanceDataLock.RUnlock()
+    time.Sleep(time.Second * 5)
   }
 }
 
@@ -177,10 +225,10 @@ func (px *Paxos) ForwardRequest(seq int, val interface{}) {
     reply := &LeaderReply{}
     px.DetermineLeader(&LeaderArgs{}, reply)
     ok := call(px.peers[reply.Leader], "Paxos.ForwardedRequest", &ForwardedArgs{seq, val}, &ForwardedReply{})
-    if ok { 
+    if ok {
       return 
     }
-    time.Sleep(10 * time.Millisecond)
+    time.Sleep(100 * time.Millisecond)
   }
 }
 
@@ -213,57 +261,18 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
     px.instanceDataLock.RUnlock()
     // Choose and n that is unique and higher than anything seen before
     proposalNum := (time.Now().UnixNano() << 8) + int64(px.me)
-    //numPrepareOks := 0
-    //maxProposalNum := int64(-1)
     maxProposalVal := val
-    /**
-    for peerIndex, _ := range px.peers {
-      args := PrepareArgs{Seq: seq, Num: proposalNum, Me: px.me}
-      var reply PrepareReply
-      ok := true
-      rpc := make(chan bool, 1)
-      if peerIndex == px.me {
-        px.Prepare(&args, &reply)
-        if ok && reply.Ok {
-          numPrepareOks ++
-          if reply.Num > maxProposalNum {
-            maxProposalNum = reply.Num
-            maxProposalVal = reply.Val
-          }
-        }
-      } else {
-        go func() { rpc <- call(px.peers[peerIndex], "Paxos.Prepare", &args, &reply) }()
-        select {
-          case ok = <- rpc:
-            if ok && reply.Ok {
-              numPrepareOks ++
-              if reply.Num > maxProposalNum {
-                maxProposalNum = reply.Num
-                maxProposalVal = reply.Val
-              }
-            }
-            px.UpdateMins(peerIndex, reply.Done)
-          case <-time.After(PAXOS_TIMEOUT):
-        }
-      }
-    }**/
-    /*
-    if prepare_ok(n_a, v_a) from majority:
-      v' = v_a with highest n_a; choose own v otherwise
-    */
     numAcceptOks := 0
     if true { //numPrepareOks > px.majority {
-      
       for peerIndex, _ := range px.peers {
         args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.mins[px.me], Me: px.me}
         var reply AcceptReply
         ok := true
         rpc := make(chan bool, 1)
         if peerIndex == px.me {
-          //println("Trying Accept")
           px.Accept(&args, &reply)
-          //println("Accepted")
           if reply.Decided {
+            px.Decided(&DecidedArgs{seq, reply.Num, reply.Val}, &DecidedReply{})
             instance.multi.Unlock()
             return
           }
@@ -276,6 +285,7 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
           select {
             case ok = <- rpc:
               if reply.Decided {
+                px.Decided(&DecidedArgs{seq, reply.Num, reply.Val}, &DecidedReply{})
                 instance.multi.Unlock()
                 return
               }
@@ -353,6 +363,13 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   px.UpdateMax(args.Seq)
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.Lock()
+  if instance.decided {
+    px.instanceDataLock.Unlock()
+    reply.Ok = false
+    reply.Decided = true
+    reply.Val = instance.acceptVal
+    return nil
+  }
   if args.Num >= instance.prepareNum {
     instance.prepareNum = args.Num
     instance.acceptNum = args.Num

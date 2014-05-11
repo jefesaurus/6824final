@@ -11,6 +11,15 @@ type Instance struct {
   multi sync.Mutex
 }
 
+type GetValueArgs struct {
+  Seq int
+}
+
+type GetValueReply struct {
+  OK bool
+  Val interface{}
+}
+
 type ForwardedArgs struct {
   Seq int
   Val interface{}
