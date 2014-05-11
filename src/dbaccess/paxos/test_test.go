@@ -73,6 +73,8 @@ func cleanup(pxa []*Paxos) {
       pxa[i].Kill()
     }
   }
+
+  DeleteDB() // delete all tmp DBs
 }
 
 func noTestSpeed(t *testing.T) {
@@ -307,6 +309,7 @@ func TestForget(t *testing.T) {
       t.Fatalf("wrong Min() %v; expected 0", m)
     }
   }
+  //fmt.Println("herasdfasdfasdf")
 
   // everyone Done() -> Min() changes?
   for i := 0; i < npaxos; i++ {
@@ -632,7 +635,7 @@ func TestOld(t *testing.T) {
 //
 // many agreements, with unreliable RPC
 //
-/**func TestManyUnreliable(t *testing.T) {
+func TestManyUnreliable(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: Many instances, unreliable RPC ...\n")
@@ -678,7 +681,7 @@ func TestOld(t *testing.T) {
   
   fmt.Printf("  ... Passed\n")
 }
-**/
+
 func pp(tag string, src int, dst int) string {
   s := "/var/tmp/824-"
   s += strconv.Itoa(os.Getuid()) + "/"

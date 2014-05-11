@@ -1,14 +1,11 @@
 package paxos
 
-import "sync"
 
 type Instance struct {
-  prepareNum int64 // Highest prepare
-  acceptNum int64 // Highest accept number
-  acceptVal interface{} // Highest accept value
-  decided bool
-  //mu sync.Mutex
-  multi sync.Mutex
+  PrepareNum int64 // Highest prepare
+  AcceptNum int64 // Highest accept number
+  AcceptVal interface{} // Highest accept value
+  Decided bool
 }
 
 type GetMaxArgs struct {

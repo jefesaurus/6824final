@@ -4,7 +4,6 @@ import (
 	"code.google.com/p/leveldb-go/leveldb"
 	"code.google.com/p/leveldb-go/leveldb/db"
 	"fmt"
-  "sync"
   "log"
   "encoding/binary"
   //"bytes"
@@ -12,6 +11,7 @@ import (
   "strings"
   "encoding/gob"
   "bytes"
+  "sync"
 )
 
 // Sync: false corrupts the DB
@@ -173,6 +173,14 @@ func (ck *DBClerk) GetStruct(table Table, key string, o interface{}) bool {
   dec := gob.NewDecoder(&buf)
   dec.Decode(o)
   return key_exists
+}
+
+func (ck *DBClerk) Delete(table Table, key string) {
+  table_key := append([]byte{byte(table)}, []byte(key)...)
+  err := ck.db.Delete(table_key, opts)
+  if err != nil {
+    log.Fatal("COULDNt DELETE")
+  }
 }
 
 func test() {

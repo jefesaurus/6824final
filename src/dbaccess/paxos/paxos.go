@@ -30,6 +30,7 @@ import "fmt"
 import "math/rand"
 import "time"
 import "strings"
+import "strconv"
 
 type Paxos struct {
   l net.Listener
@@ -44,8 +45,9 @@ type Paxos struct {
   majority int
 
   instances map[int]*Instance
-  //instancesLock sync.Mutex
+
   instanceDataLock sync.RWMutex
+  multi_locks map[int]*sync.Mutex
 
   maxLock sync.Mutex
   minsLock sync.Mutex
@@ -89,11 +91,7 @@ const (
 
 func (px *Paxos) MultiPaxos() {
   go func() {
-  for true {
-    if px.dead {
-      return
-    }
-
+  for !px.dead {
     for index, server := range px.peers {
       if index == px.me {
         continue
@@ -102,7 +100,7 @@ func (px *Paxos) MultiPaxos() {
       rpc := make(chan bool, 1)
       go func() { rpc <- call(server, "Paxos.Ping", &PingArgs{px.me, px.GetPeerMin(px.me)}, reply)} ()
       select {
-        case ok := <- rpc:
+        case ok := <-rpc:
           if ok && reply.OK { //This should be ok assuming communciation is bidirectional
             px.PingLock.Lock()
             px.PingTimes[index] = time.Now()
@@ -112,19 +110,15 @@ func (px *Paxos) MultiPaxos() {
         case <-time.After(PING_TIMEOUT):
       }
     }
- 
+
     time.Sleep(PING_INTERVAL)
   }
   }()
   go func() {
-  for true {
-    if px.dead {
-      return
-    }
-    
+  for !px.dead {
     reply := &LeaderReply{}
     px.DetermineLeader(&LeaderArgs{}, reply)
-    
+
     px.LeaderLock.Lock()
     if px.Leader && reply.Leader != px.me {
       px.Leader = false;
@@ -148,7 +142,7 @@ func (px *Paxos) GetMajorityMax() {
   for peerIndex, peer := range px.peers {
     peers[peerIndex] = peer
   }
-  for oks <= px.majority {  
+  for oks <= px.majority {
     for peerIndex, _ := range peers {
       if peerIndex == px.me {
         continue
@@ -157,11 +151,11 @@ func (px *Paxos) GetMajorityMax() {
       rpc := make(chan bool, 1)
       go func() { rpc <- call(px.peers[peerIndex], "Paxos.GetMax", &GetMaxArgs{}, reply) }()
       select {
-        case ok := <- rpc:
+        case ok := <-rpc:
           if ok {
             oks++
             maxMax = max(maxMax, reply.Max)
-            delete(peers, peerIndex) 
+            delete(peers, peerIndex)
           }
         case <-time.After(PING_TIMEOUT):
       }
@@ -177,13 +171,12 @@ func (px *Paxos) GetMax(args *GetMaxArgs, reply *GetMaxReply) error {
 }
 
 func (px *Paxos) Ping(args *PingArgs, reply *PingReply) error {
-  //TODO acquire lock
   px.PingLock.Lock()
   px.PingTimes[args.Me] = time.Now()
   px.PingLock.Unlock()
-  reply.OK = true 
-  px.UpdateMins(args.Me, args.Done) 
-  return nil 
+  reply.OK = true
+  px.UpdateMins(args.Me, args.Done)
+  return nil
 }
 
 func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) error {
@@ -192,7 +185,7 @@ func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) error {
   for key, val := range px.PingTimes {
     if val.Add(LEADER_LEASE).After(now) && key > leader {
       leader = key
-    } 
+    }
   }
   if leader < px.me {
     leader = px.me
@@ -209,7 +202,7 @@ func (px *Paxos) Start(seq int, val interface{}) {
     go px.DoPaxos(seq, val)
   } else {
     go px.ForwardRequest(seq, val)
-    go func() { 
+    go func() {
       time.Sleep(PAXOS_TIMEOUT * 2)
       px.DetermineValue(seq)
     }()
@@ -220,8 +213,8 @@ func (px *Paxos) GetValue(args *GetValueArgs, reply *GetValueReply) error {
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.RLock()
   defer px.instanceDataLock.RUnlock()
-  if instance.decided {
-    reply.Val = instance.acceptVal
+  if instance.Decided {
+    reply.Val = instance.AcceptVal
     reply.OK = true
   } else {
     reply.OK = false
@@ -233,7 +226,7 @@ func (px *Paxos) DetermineValue(seq int) {
   for true {
     instance := px.GetInstance(seq)
     px.instanceDataLock.RLock()
-    if instance.decided {
+    if instance.Decided {
       px.instanceDataLock.RUnlock()
       return
     } else {
@@ -246,7 +239,7 @@ func (px *Paxos) DetermineValue(seq int) {
         rpc := make(chan bool, 1)
         go func() { rpc <- call(px.peers[peerIndex], "Paxos.GetValue", &GetValueArgs{seq}, reply) }()
         select {
-          case ok := <- rpc:
+          case ok := <-rpc:
             if ok && reply.OK {
               px.Decided(&DecidedArgs{seq, (time.Now().UnixNano() << 8) + int64(px.me), reply.Val}, &DecidedReply{})
               return
@@ -265,7 +258,7 @@ func (px *Paxos) ForwardRequest(seq int, val interface{}) {
     px.DetermineLeader(&LeaderArgs{}, reply)
     ok := call(px.peers[reply.Leader], "Paxos.ForwardedRequest", &ForwardedArgs{seq, val}, &ForwardedReply{})
     if ok {
-      return 
+      return
     }
     time.Sleep(100 * time.Millisecond)
   }
@@ -290,11 +283,17 @@ proposer(v):
 
 func (px *Paxos) DoOldPaxos(seq int, val interface{}) {
   instance := px.GetInstance(seq);
-  instance.multi.Lock()
+  instance_lock, has_lock := px.multi_locks[seq]
+  if !has_lock {
+    log.Fatal("NO LOCKKK")
+  }
+  instance_lock.Lock()
+
+
   for !px.dead  {
     px.instanceDataLock.RLock()
-    if instance.decided {
-      instance.multi.Unlock()
+    if instance.Decided {
+      instance_lock.Unlock()
       px.instanceDataLock.RUnlock()
       return
     }
@@ -356,20 +355,25 @@ func (px *Paxos) DoOldPaxos(seq int, val interface{}) {
 
 func (px *Paxos) DoPaxos(seq int, val interface{}) {
   for px.NewLeader {
-    time.Sleep(time.Second) 
+    time.Sleep(time.Second)
   }
- 
+
   if seq <= px.MajorityMax {
     px.DoOldPaxos(seq, val)
     return
-  } 
-  
+  }
+
   instance := px.GetInstance(seq);
-  instance.multi.Lock()
+  instance_lock, has_lock := px.multi_locks[seq]
+  if !has_lock {
+    log.Fatal("NO LOCKKK")
+  }
+  instance_lock.Lock()
+
   for !px.dead  {
     px.instanceDataLock.RLock()
-    if instance.decided {
-      instance.multi.Unlock()
+    if instance.Decided {
+      instance_lock.Unlock()
       px.instanceDataLock.RUnlock()
       return
     }
@@ -388,7 +392,7 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
           px.Accept(&args, &reply)
           if reply.Decided {
             px.Decided(&DecidedArgs{seq, reply.Num, reply.Val}, &DecidedReply{})
-            instance.multi.Unlock()
+            instance_lock.Unlock()
             return
           }
           if ok && reply.Ok {
@@ -398,10 +402,10 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
         } else {
           go func() { rpc <- call(px.peers[peerIndex], "Paxos.Accept", &args, &reply) }()
           select {
-            case ok = <- rpc:
+            case ok = <-rpc:
               if reply.Decided {
                 px.Decided(&DecidedArgs{seq, reply.Num, reply.Val}, &DecidedReply{})
-                instance.multi.Unlock()
+                instance_lock.Unlock()
                 return
               }
               if ok && reply.Ok {
@@ -414,7 +418,7 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
       }
       if numAcceptOks > px.majority {
         px.SendDecides(seq, proposalNum, maxProposalVal)
-        instance.multi.Unlock()
+        instance_lock.Unlock()
         return
       }
     }
@@ -457,13 +461,67 @@ func (px *Paxos) SendDecides(seq int, proposalNum int64, val interface{}) {
   }
 }
 
+const USE_DB = true
 func (px *Paxos) GetInstance(seq int) *Instance {
   px.instanceDataLock.Lock()
-  if _,ok := px.instances[seq]; !ok {
-    px.instances[seq] = &Instance{prepareNum: -1, acceptNum: -1, acceptVal: nil, decided: false}
+  _, has_lock := px.multi_locks[seq]
+  if !has_lock {
+    px.multi_locks[seq] = &sync.Mutex{}
   }
+  var instance *Instance
+
+  /*
+  if !USE_DB {
+    if _,ok := px.instances[seq]; !ok {
+      px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
+    }
+    instance = px.instances[seq]
+  } else {
+    instance := px.DBGetInstance(seq)
+  }
+  */
+  if _,ok := px.instances[seq]; !ok {
+    px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
+  }
+  instance = px.instances[seq]
+
   px.instanceDataLock.Unlock()
-  return px.instances[seq]
+
+  db_inst := px.DBGetInstance(seq)
+  if !(InstEq(instance, db_inst)) {
+    log.Fatal("DB didn't work")
+  }
+
+  return instance
+}
+
+func (px *Paxos) DBGetInstance(seq int) *Instance {
+  inst := new(Instance)
+  exists := px.db.GetStruct(METADATA, "instance" + strconv.Itoa(seq), inst)
+  if !exists {
+    inst = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
+    px.db.PutStruct(METADATA, "instance" + strconv.Itoa(seq), inst)
+  }
+  return inst
+}
+
+func (px *Paxos) PutInstance(seq int, inst *Instance) {
+  px.db.PutStruct(METADATA, "instance" + strconv.Itoa(seq), inst)
+}
+
+func DupInstance(f *Instance) *Instance {
+  new_inst := &Instance{PrepareNum: f.PrepareNum, AcceptNum: f.AcceptNum, AcceptVal: f.AcceptVal, Decided: f.Decided}
+  if !(InstEq(f, new_inst)) {
+    log.Fatal("Copy didn't work")
+  }
+  return new_inst
+}
+
+func InstEq(a *Instance, b *Instance) bool {
+  return ((a.PrepareNum == b.PrepareNum) &&
+      (a.AcceptNum == b.AcceptNum) &&
+      (a.AcceptVal == b.AcceptVal) &&
+      (a.Decided == b.Decided))
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
@@ -471,14 +529,18 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.Lock()
-  if instance.prepareNum >= args.Num {
+  if instance.PrepareNum >= args.Num {
     reply.Ok = false
-    reply.Num = instance.prepareNum
+    reply.Num = instance.PrepareNum
   } else {
+    new_inst := DupInstance(instance)
+    new_inst.PrepareNum = args.Num
+    px.PutInstance(args.Seq, new_inst)
+    instance.PrepareNum = args.Num
+
     reply.Ok = true
-    reply.Num = instance.acceptNum
-    reply.Val = instance.acceptVal
-    instance.prepareNum = args.Num
+    reply.Num = instance.AcceptNum
+    reply.Val = instance.AcceptVal
   }
   px.instanceDataLock.Unlock()
   reply.Done = px.EvalDone()
@@ -490,18 +552,24 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   px.UpdateMax(args.Seq)
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.Lock()
-  if instance.decided {
+  if instance.Decided {
     px.instanceDataLock.Unlock()
     reply.Ok = false
     reply.Decided = true
-    reply.Val = instance.acceptVal
+    reply.Val = instance.AcceptVal
     return nil
   }
-  if args.Num >= instance.prepareNum {
-    instance.prepareNum = args.Num
-    instance.acceptNum = args.Num
-    instance.acceptVal = args.Val
-    reply.Decided = instance.decided
+  if args.Num >= instance.PrepareNum {
+    new_inst := DupInstance(instance)
+    new_inst.PrepareNum = args.Num
+    new_inst.AcceptNum = args.Num
+    new_inst.AcceptVal = args.Val
+    px.PutInstance(args.Seq, new_inst)
+
+    instance.PrepareNum = args.Num
+    instance.AcceptNum = args.Num
+    instance.AcceptVal = args.Val
+    reply.Decided = instance.Decided
     reply.Num = args.Num
     reply.Ok = true
   } else {
@@ -517,9 +585,14 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.Lock()
-  if !instance.decided {
-    instance.acceptVal = args.Val
-    instance.decided = true
+  if !instance.Decided {
+    new_inst := DupInstance(instance)
+    new_inst.AcceptVal = args.Val
+    new_inst.Decided = true
+    px.PutInstance(args.Seq, new_inst)
+
+    instance.AcceptVal = args.Val
+    instance.Decided = true
     reply.Ok = true
   } else {
     reply.Ok = false
@@ -590,6 +663,7 @@ func (px* Paxos) DeleteTo(done int) {
   for key, _ := range px.instances {
     if key <= done {
       delete(px.instances, key)
+      px.db.Delete(METADATA, "instance" + strconv.Itoa(key))
     }
   }
   px.instanceDataLock.Unlock()
@@ -607,7 +681,7 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   instance := px.GetInstance(seq)
   px.instanceDataLock.RLock()
   defer px.instanceDataLock.RUnlock()
-  return instance.decided, instance.acceptVal
+  return instance.Decided, instance.AcceptVal
 }
 
 //##############################################################################
@@ -762,10 +836,9 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   return px
 }
 
-
 func FinishMake(px *Paxos, rpcs *rpc.Server) *Paxos {
   px.instances = make(map[int]*Instance)
-
+  px.multi_locks = make(map[int]*sync.Mutex)
 
   px.majority = len(px.peers)/2
   px.prevDone = -1
