@@ -73,6 +73,7 @@ func cleanup(pxa []*Paxos) {
       pxa[i].Kill()
     }
   }
+  DeleteDB()
 }
 
 func noTestSpeed(t *testing.T) {

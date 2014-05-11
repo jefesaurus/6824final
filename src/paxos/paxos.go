@@ -29,24 +29,36 @@ import "sync"
 import "fmt"
 import "math/rand"
 import "time"
+import "strings"
+//import "strconv"
+import "encoding/gob"
+import "bytes"
+import "reflect"
+import "dbaccess"
+
+const (
+  METADATA = 1
+  STORAGE = 2
+)
 
 type Paxos struct {
   l net.Listener
   dead bool
   unreliable bool
   rpcCount int
+
+  db *dbaccess.DBClerk
+
   peers []string
   me int // index into peers[]
   majority int
 
   instances map[int]*Instance
-  //instancesLock sync.Mutex
-  instanceDataLock sync.RWMutex   
 
-  max int
+  instanceDataLock sync.RWMutex
+  multi_locks map[int]*sync.Mutex
+
   maxLock sync.Mutex
-
-  mins []int
   minsLock sync.Mutex
 
   prevDone int
@@ -88,20 +100,16 @@ const (
 
 func (px *Paxos) MultiPaxos() {
   go func() {
-  for true {
-    if px.dead {
-      return
-    }
-
+  for !px.dead {
     for index, server := range px.peers {
       if index == px.me {
         continue
       }
       reply := &PingReply{}
       rpc := make(chan bool, 1)
-      go func() { rpc <- call(server, "Paxos.Ping", &PingArgs{px.me, px.mins[px.me]}, reply)} ()
+      go func() { rpc <- call(server, "Paxos.Ping", &PingArgs{px.me, px.GetPeerMin(px.me)}, reply)} ()
       select {
-        case ok := <- rpc:
+        case ok := <-rpc:
           if ok && reply.OK { //This should be ok assuming communciation is bidirectional
             px.PingLock.Lock()
             px.PingTimes[index] = time.Now()
@@ -111,21 +119,17 @@ func (px *Paxos) MultiPaxos() {
         case <-time.After(PING_TIMEOUT):
       }
     }
- 
+
     time.Sleep(PING_INTERVAL)
   }
   }()
   go func() {
-  for true {
-    if px.dead {
-      return
-    }
-    
+  for !px.dead {
     reply := &LeaderReply{}
     px.DetermineLeader(&LeaderArgs{}, reply)
-    
+
     px.LeaderLock.Lock()
-    if px.Leader && reply.Leader != px.me{
+    if px.Leader && reply.Leader != px.me {
       px.Leader = false;
     }
 
@@ -147,7 +151,7 @@ func (px *Paxos) GetMajorityMax() {
   for peerIndex, peer := range px.peers {
     peers[peerIndex] = peer
   }
-  for oks <= px.majority {  
+  for oks <= px.majority {
     for peerIndex, _ := range peers {
       if peerIndex == px.me {
         continue
@@ -156,11 +160,11 @@ func (px *Paxos) GetMajorityMax() {
       rpc := make(chan bool, 1)
       go func() { rpc <- call(px.peers[peerIndex], "Paxos.GetMax", &GetMaxArgs{}, reply) }()
       select {
-        case ok := <- rpc:
+        case ok := <-rpc:
           if ok {
             oks++
             maxMax = max(maxMax, reply.Max)
-            delete(peers, peerIndex) 
+            delete(peers, peerIndex)
           }
         case <-time.After(PING_TIMEOUT):
       }
@@ -176,13 +180,12 @@ func (px *Paxos) GetMax(args *GetMaxArgs, reply *GetMaxReply) error {
 }
 
 func (px *Paxos) Ping(args *PingArgs, reply *PingReply) error {
-  //TODO acquire lock
   px.PingLock.Lock()
   px.PingTimes[args.Me] = time.Now()
   px.PingLock.Unlock()
-  reply.OK = true 
-  px.UpdateMins(args.Me, args.Done) 
-  return nil 
+  reply.OK = true
+  px.UpdateMins(args.Me, args.Done)
+  return nil
 }
 
 func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) error {
@@ -191,11 +194,11 @@ func (px *Paxos) DetermineLeader(args *LeaderArgs, reply *LeaderReply) error {
   in_contact := 0
   for key, val := range px.PingTimes {
     if val.Add(LEADER_LEASE).After(now) {
-      if key > leader { 
+      if key > leader {
         leader = key
       }
       in_contact++
-    } 
+    }
   }
   if leader < px.me {
     leader = px.me
@@ -217,7 +220,7 @@ func (px *Paxos) Start(seq int, val interface{}) {
     go px.DoPaxos(seq, val)
   } else {
     go px.ForwardRequest(seq, val)
-    go func() { 
+    go func() {
       time.Sleep(PAXOS_TIMEOUT * 2)
       px.DetermineValue(seq)
     }()
@@ -228,8 +231,8 @@ func (px *Paxos) GetValue(args *GetValueArgs, reply *GetValueReply) error {
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.RLock()
   defer px.instanceDataLock.RUnlock()
-  if instance.decided {
-    reply.Val = instance.acceptVal
+  if instance.Decided {
+    reply.Val = instance.AcceptVal
     reply.OK = true
   } else {
     reply.OK = false
@@ -241,7 +244,7 @@ func (px *Paxos) DetermineValue(seq int) {
   for true {
     instance := px.GetInstance(seq)
     px.instanceDataLock.RLock()
-    if instance.decided {
+    if instance.Decided {
       px.instanceDataLock.RUnlock()
       return
     } else {
@@ -254,7 +257,7 @@ func (px *Paxos) DetermineValue(seq int) {
         rpc := make(chan bool, 1)
         go func() { rpc <- call(px.peers[peerIndex], "Paxos.GetValue", &GetValueArgs{seq}, reply) }()
         select {
-          case ok := <- rpc:
+          case ok := <-rpc:
             if ok && reply.OK {
               px.Decided(&DecidedArgs{seq, (time.Now().UnixNano() << 8) + int64(px.me), reply.Val}, &DecidedReply{})
               return
@@ -273,7 +276,7 @@ func (px *Paxos) ForwardRequest(seq int, val interface{}) {
     px.DetermineLeader(&LeaderArgs{}, reply)
     ok := call(px.peers[reply.Leader], "Paxos.ForwardedRequest", &ForwardedArgs{seq, val}, &ForwardedReply{})
     if ok {
-      return 
+      return
     }
     time.Sleep(100 * time.Millisecond)
   }
@@ -298,11 +301,17 @@ proposer(v):
 
 func (px *Paxos) DoOldPaxos(seq int, val interface{}) {
   instance := px.GetInstance(seq);
-  instance.multi.Lock()
+  instance_lock, has_lock := px.multi_locks[seq]
+  if !has_lock {
+    log.Fatal("NO LOCKKK")
+  }
+  instance_lock.Lock()
+
+
   for !px.dead  {
     px.instanceDataLock.RLock()
-    if instance.decided {
-      instance.multi.Unlock()
+    if instance.Decided {
+      instance_lock.Unlock()
       px.instanceDataLock.RUnlock()
       return
     }
@@ -340,7 +349,7 @@ func (px *Paxos) DoOldPaxos(seq int, val interface{}) {
     numAcceptOks := 0
     if numPrepareOks > px.majority {
       for peerIndex, _ := range px.peers {
-        args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.mins[px.me], Me: px.me}
+        args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.GetPeerMin(px.me), Me: px.me}
         var reply AcceptReply
         ok := true
         if peerIndex == px.me {
@@ -364,20 +373,25 @@ func (px *Paxos) DoOldPaxos(seq int, val interface{}) {
 
 func (px *Paxos) DoPaxos(seq int, val interface{}) {
   for px.NewLeader {
-    time.Sleep(time.Second) 
+    time.Sleep(time.Second)
   }
- 
+
   if seq <= px.MajorityMax {
     px.DoOldPaxos(seq, val)
     return
-  } 
-  
+  }
+
   instance := px.GetInstance(seq);
-  instance.multi.Lock()
+  instance_lock, has_lock := px.multi_locks[seq]
+  if !has_lock {
+    log.Fatal("NO LOCKKK")
+  }
+  instance_lock.Lock()
+
   for !px.dead  {
     px.instanceDataLock.RLock()
-    if instance.decided {
-      instance.multi.Unlock()
+    if instance.Decided {
+      instance_lock.Unlock()
       px.instanceDataLock.RUnlock()
       return
     }
@@ -388,7 +402,7 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
     numAcceptOks := 0
     if true { //numPrepareOks > px.majority {
       for peerIndex, _ := range px.peers {
-        args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.mins[px.me], Me: px.me}
+        args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.GetPeerMin(px.me), Me: px.me}
         var reply AcceptReply
         ok := true
         rpc := make(chan bool, 1)
@@ -396,7 +410,7 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
           px.Accept(&args, &reply)
           if reply.Decided {
             px.Decided(&DecidedArgs{seq, reply.Num, reply.Val}, &DecidedReply{})
-            instance.multi.Unlock()
+            instance_lock.Unlock()
             return
           }
           if ok && reply.Ok {
@@ -406,10 +420,10 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
         } else {
           go func() { rpc <- call(px.peers[peerIndex], "Paxos.Accept", &args, &reply) }()
           select {
-            case ok = <- rpc:
+            case ok = <-rpc:
               if reply.Decided {
                 px.Decided(&DecidedArgs{seq, reply.Num, reply.Val}, &DecidedReply{})
-                instance.multi.Unlock()
+                instance_lock.Unlock()
                 return
               }
               if ok && reply.Ok {
@@ -422,7 +436,7 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
       }
       if numAcceptOks > px.majority {
         px.SendDecides(seq, proposalNum, maxProposalVal)
-        instance.multi.Unlock()
+        instance_lock.Unlock()
         return
       }
     }
@@ -432,18 +446,11 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
 
 func (px *Paxos) UpdateMins(index int, newVal int) {
   px.minsLock.Lock()
-  if px.mins[index] < newVal {
-    px.mins[index] = newVal
+  current_min := px.GetPeerMin(index)
+  if current_min < newVal {
+    px.SetPeerMin(index, newVal)
   }
   px.minsLock.Unlock()
-}
-
-func (px *Paxos) UpdateMax(newVal int) {
-  px.maxLock.Lock()
-  if px.max < newVal {
-    px.max = newVal
-  }
-  px.maxLock.Unlock()
 }
 
 
@@ -472,13 +479,77 @@ func (px *Paxos) SendDecides(seq int, proposalNum int64, val interface{}) {
   }
 }
 
+const USE_MEM = false
+
 func (px *Paxos) GetInstance(seq int) *Instance {
   px.instanceDataLock.Lock()
-  if _,ok := px.instances[seq]; !ok {
-    px.instances[seq] = &Instance{prepareNum: -1, acceptNum: -1, acceptVal: nil, decided: false}
+  _, has_lock := px.multi_locks[seq]
+  if !has_lock {
+    px.multi_locks[seq] = &sync.Mutex{}
+  }
+  var instance *Instance
+
+  if USE_MEM {
+    if _,ok := px.instances[seq]; !ok {
+      px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
+    }
+    instance = px.instances[seq]
+  } else {
+    instance = px.DBGetInstance(seq)
   }
   px.instanceDataLock.Unlock()
-  return px.instances[seq]
+
+  return instance
+}
+
+func (px *Paxos) DBGetInstance(seq int) *Instance {
+  inst := new(Instance)
+  inst_key := fmt.Sprintf("instance%d",seq)
+  exists := px.db.GetStruct(METADATA, inst_key, inst)
+  if !exists {
+    inst = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
+    px.db.PutStruct(METADATA, inst_key, inst)
+    px.AddOpenInstance(seq)
+  }
+  return inst
+}
+
+func (px *Paxos) PutInstance(seq int, inst *Instance) {
+  px.db.PutStruct(METADATA, fmt.Sprintf("instance%d",seq), inst)
+}
+
+func DupInstance(f *Instance) *Instance {
+  new_inst := &Instance{}
+  Clone(f, new_inst)
+  if !reflect.DeepEqual(f,new_inst) {
+    log.Fatal("Copy didn't work")
+  }
+  return new_inst
+}
+
+func Clone(a,b interface{}) {
+  buff := new(bytes.Buffer)
+  enc := gob.NewEncoder(buff)
+  dec := gob.NewDecoder(buff)
+  enc.Encode(a)
+  dec.Decode(b)
+}
+
+func CheckInst(a *Instance, b *Instance) {
+  if !(InstEq(a, b)) {
+    fmt.Println("R: %d, DB: %d", a.PrepareNum, b.PrepareNum)
+    fmt.Println("R: %d, DB: %d", a.AcceptNum, b.AcceptNum)
+    fmt.Println("R: %d, DB: %d", a.Decided, b.Decided)
+    fmt.Println("R: %s, DB: %s", a.AcceptVal, b.AcceptVal)
+    log.Fatal("DB didn't work")
+  }
+}
+
+func InstEq(a *Instance, b *Instance) bool {
+  return ((a.PrepareNum == b.PrepareNum) &&
+      (a.AcceptNum == b.AcceptNum) &&
+      (a.AcceptVal == b.AcceptVal) &&
+      (a.Decided == b.Decided))
 }
 
 func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
@@ -486,14 +557,22 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
 
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.Lock()
-  if instance.prepareNum >= args.Num {
+  if instance.PrepareNum >= args.Num {
     reply.Ok = false
-    reply.Num = instance.prepareNum
+    reply.Num = instance.PrepareNum
   } else {
+    new_inst := DupInstance(instance)
+    new_inst.PrepareNum = args.Num
+
+    if USE_MEM {
+      instance.PrepareNum = args.Num
+    } else {
+      px.PutInstance(args.Seq, new_inst)
+    }
+
     reply.Ok = true
-    reply.Num = instance.acceptNum
-    reply.Val = instance.acceptVal
-    instance.prepareNum = args.Num
+    reply.Num = instance.AcceptNum
+    reply.Val = instance.AcceptVal
   }
   px.instanceDataLock.Unlock()
   reply.Done = px.EvalDone()
@@ -505,18 +584,29 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   px.UpdateMax(args.Seq)
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.Lock()
-  if instance.decided {
+  if instance.Decided {
     px.instanceDataLock.Unlock()
     reply.Ok = false
     reply.Decided = true
-    reply.Val = instance.acceptVal
+    reply.Val = instance.AcceptVal
     return nil
   }
-  if args.Num >= instance.prepareNum {
-    instance.prepareNum = args.Num
-    instance.acceptNum = args.Num
-    instance.acceptVal = args.Val
-    reply.Decided = instance.decided
+  if args.Num >= instance.PrepareNum {
+    new_inst := DupInstance(instance)
+    new_inst.PrepareNum = args.Num
+    new_inst.AcceptNum = args.Num
+    new_inst.AcceptVal = args.Val
+
+    if USE_MEM {
+      instance.PrepareNum = args.Num
+      instance.AcceptNum = args.Num
+      instance.AcceptVal = args.Val
+    } else {
+      px.PutInstance(args.Seq, new_inst)
+    }
+
+
+    reply.Decided = instance.Decided
     reply.Num = args.Num
     reply.Ok = true
   } else {
@@ -532,9 +622,18 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 
   instance := px.GetInstance(args.Seq)
   px.instanceDataLock.Lock()
-  if !instance.decided {
-    instance.acceptVal = args.Val
-    instance.decided = true
+  if !instance.Decided {
+    new_inst := DupInstance(instance)
+    new_inst.AcceptVal = args.Val
+    new_inst.Decided = true
+
+    if USE_MEM {
+      instance.AcceptVal = args.Val
+      instance.Decided = true
+    } else {
+      px.PutInstance(args.Seq, new_inst)
+    }
+
     reply.Ok = true
   } else {
     reply.Ok = false
@@ -552,17 +651,6 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
 //
 func (px *Paxos) Done(seq int) {
   px.UpdateMins(px.me, seq)
-}
-
-//
-// the application wants to know the
-// highest instance sequence known to
-// this peer.
-//
-func (px *Paxos) Max() int {
-  px.maxLock.Lock()
-  defer px.maxLock.Unlock()
-  return px.max
 }
 
 //
@@ -599,9 +687,9 @@ func (px *Paxos) Min() int {
 
 func (px *Paxos) EvalDone() int {
   px.minsLock.Lock()
-  done := px.mins[0]
-  for i := 1; i < len(px.mins); i ++ {
-    done = min(px.mins[i], done)
+  done := px.GetPeerMin(0)
+  for i := 1; i < len(px.peers); i ++ {
+    done = min(px.GetPeerMin(i), done)
   }
   if px.prevDone < done {
     px.DeleteTo(done)
@@ -613,9 +701,17 @@ func (px *Paxos) EvalDone() int {
 
 func (px* Paxos) DeleteTo(done int) {
   px.instanceDataLock.Lock()
-  for key, _ := range px.instances {
-    if key <= done {
-      delete(px.instances, key)
+  if USE_MEM {
+    for key, _ := range px.instances {
+      if key <= done {
+        delete(px.instances, key)
+      }
+    }
+  } else {
+    for key, _ := range px.GetOpenInstances() {
+      if key <= done {
+        px.DeleteInstance(key)
+      }
     }
   }
   px.instanceDataLock.Unlock()
@@ -633,9 +729,144 @@ func (px *Paxos) Status(seq int) (bool, interface{}) {
   instance := px.GetInstance(seq)
   px.instanceDataLock.RLock()
   defer px.instanceDataLock.RUnlock()
-  return instance.decided, instance.acceptVal
+  return instance.Decided, instance.AcceptVal
 }
 
+//##############################################################################
+
+func (px *Paxos) GetPeerMin(peer_index int) int {
+  peer_min_key := fmt.Sprintf("mins-%s", px.peers[peer_index])
+  peer_min, exists := px.db.GetInt(METADATA, peer_min_key)
+  if !exists {
+    log.Fatal("No record of min for peer: %d", px.peers[peer_index])
+  }
+  return peer_min
+}
+
+func (px *Paxos) SetPeerMin(peer_index int, min int) {
+  peer_min_key := fmt.Sprintf("mins-%s", px.peers[peer_index])
+  px.db.PutInt(METADATA, peer_min_key, min)
+}
+
+func (px *Paxos) TryRestoreFromDisk() bool {
+  me, me_exists := px.db.GetInt(METADATA, "me")
+  if !me_exists {
+    return false
+  }
+
+  // First get list of peers
+  // me is 0
+  stored_peers, peers_exists := px.db.GetStringList(METADATA, "peers")
+  if !peers_exists {
+    return false
+  }
+  for _, peer := range stored_peers {
+    println(peer)
+  }
+
+  // Make sure it has the max
+  _, max_exists := px.db.GetInt(METADATA, "max");
+  if !max_exists {
+    return false
+  }
+
+  // Make sure it has the peer mins
+  for _, peer := range stored_peers {
+    peer_min_key := fmt.Sprintf("mins-%s", peer)
+    _, exists := px.db.GetInt(METADATA, peer_min_key)
+    if !exists {
+      return false
+    }
+  }
+
+  // Commit some statics to local state:
+  px.me = me
+  px.peers = stored_peers
+  return true
+}
+
+
+func (px *Paxos) FreshStart(peers []string, me int) {
+  // Put my index
+  px.db.PutInt(METADATA, "me", me)
+  px.me = me
+
+  // Enter peers
+  px.db.PutStringList(METADATA, "peers", peers)
+  px.peers = peers
+
+  // Init peer mins in DB
+  for _, peer:= range peers {
+    peer_min_key := fmt.Sprintf("mins-%s", peer)
+    px.db.PutInt(METADATA, peer_min_key, -1)
+  }
+
+  // Init max in DB
+  px.SetMax(-1)
+
+  // Sequence numbers of currently in flight instances
+  // Used for deleting
+  var current_instances map[int]bool
+  px.db.PutStruct(METADATA, "openinstances", current_instances)
+}
+
+func (px *Paxos) SetMax(max int) {
+  px.db.PutInt(METADATA, "max", max)
+}
+
+func (px *Paxos) Max() int {
+  current_max, success := px.db.GetInt(METADATA, "max")
+  if success {
+    return current_max
+  } else {
+    log.Fatal("Error getting max")
+    return -1
+  }
+}
+
+func (px *Paxos) UpdateMax(newVal int) {
+  current_max, success := px.db.GetInt(METADATA, "max")
+  if success {
+    if current_max < newVal {
+      px.db.PutInt(METADATA, "max", newVal)
+    }
+  } else {
+    log.Fatal("Error getting max")
+  }
+}
+
+func (px *Paxos) GetOpenInstances() map[int]bool {
+  var i_set map[int]bool
+  set_exists := px.db.GetStruct(METADATA, "openinstances", &i_set)
+  if !set_exists {
+    log.Fatal("instance set not found")
+  }
+  return i_set
+}
+
+func (px *Paxos) AddOpenInstance(seq int) {
+  current_instances := px.GetOpenInstances()
+  current_instances[seq] = true
+  px.db.PutStruct(METADATA, "openinstances", current_instances)
+}
+
+func (px *Paxos) DeleteInstance(seq int) {
+  // TODO make this atomic
+  px.db.Delete(METADATA, fmt.Sprintf("instance%d",seq))
+  current_instances := px.GetOpenInstances()
+  delete(current_instances, seq)
+  px.db.PutStruct(METADATA, "openinstances", current_instances)
+}
+
+
+//##############################################################################
+
+func DeleteDB() {
+  err := os.RemoveAll(db_path)
+  if err != nil {
+    log.Fatal(err)
+  }
+}
 
 //
 // tell the peer to shut itself down.
@@ -654,19 +885,34 @@ func (px *Paxos) Kill() {
 // the ports of all the paxos peers (including this one)
 // are in peers[]. this servers port is peers[me].
 //
+const db_path = "/tmp/pxdb/"
+
+func MakeFromDB(me string) {
+  px := &Paxos{}
+  px.db = dbaccess.GetDatabase(db_path + me)
+
+  did_restore := px.TryRestoreFromDisk()
+  if !did_restore {
+    log.Fatal("RESTORE FROM DB FAILED")
+  }
+}
+
+
 func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px := &Paxos{}
-  px.peers = peers
-  px.me = me
+  path_parts := strings.Split(peers[me], "/")
+  px_db_path := db_path + path_parts[len(path_parts)-1]
+  os.Remove(px_db_path)
+  px.db = dbaccess.GetDatabase(px_db_path)
+  px.FreshStart(peers, me)
+  FinishMake(px, rpcs)
+  return px
+}
 
-  // Your initialization code here.
+func FinishMake(px *Paxos, rpcs *rpc.Server) *Paxos {
   px.instances = make(map[int]*Instance)
-  px.max = -1
+  px.multi_locks = make(map[int]*sync.Mutex)
 
-  px.mins = make([]int,len(peers))
-  for i,_ := range px.mins {
-    px.mins[i] = -1
-  }
   px.majority = len(px.peers)/2
   px.prevDone = -1
   px.PingTimes = make(map[int]time.Time)
@@ -689,8 +935,8 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
 
     // prepare to receive connections from clients.
     // change "unix" to "tcp" to use over a network.
-    os.Remove(peers[me]) // only needed for "unix"
-    l, e := net.Listen("unix", peers[me]);
+    os.Remove(px.peers[px.me]) // only needed for "unix"
+    l, e := net.Listen("unix", px.peers[px.me]);
     if e != nil {
       log.Fatal("listen error: ", e);
     }
@@ -725,7 +971,7 @@ func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
           conn.Close()
         }
         if err != nil && px.dead == false {
-          fmt.Printf("Paxos(%v) accept: %v\n", me, err.Error())
+          fmt.Printf("Paxos(%v) accept: %v\n", px.me, err.Error())
         }
       }
     }()
