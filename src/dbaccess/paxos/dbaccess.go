@@ -3,6 +3,7 @@ package paxos
 import (
 	"code.google.com/p/leveldb-go/leveldb"
 	"code.google.com/p/leveldb-go/leveldb/db"
+  //"github.com/jmhodges/levigo"
 	"fmt"
   "log"
   "encoding/binary"
@@ -120,6 +121,7 @@ func (ck *DBClerk) GetIntList(table Table, key string) ([]int, bool) {
     return nil, false
   }
 }
+
 
 const STRING_SEP = ","
 func (ck *DBClerk) PutStringList(table Table, key string, values []string) {
@@ -314,12 +316,32 @@ func test_struct() {
   println(inst2.PrepareNum)
 }
 
+func test_map() {
+  var m = map[string]bool{"one":true, "two":false, "three":true}
+  db_path := "/tmp/testdbb1"
+  ck := GetDatabase(db_path)
+  ck.PutStruct(METADATA, "first", m)
+  ck.Close()
+
+  ck = GetDatabase(db_path)
+  var dMap map[string]bool
+
+  found := ck.GetStruct(METADATA, "first", &dMap)
+  if !found {
+    log.Fatal("first")
+  }
+  for k, v := range dMap {
+    print(k + ", ")
+    println(v)
+  }
+}
 
 
 func main() {
   //test_batch()
   //test_speed(500)
-  test_struct()
+  //test_struct()
+  test_map()
 }
 
 

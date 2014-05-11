@@ -30,7 +30,10 @@ import "fmt"
 import "math/rand"
 import "time"
 import "strings"
-import "strconv"
+//import "strconv"
+import "encoding/gob"
+import "bytes"
+import "reflect"
 
 type Paxos struct {
   l net.Listener
@@ -470,7 +473,6 @@ func (px *Paxos) GetInstance(seq int) *Instance {
   }
   var instance *Instance
 
-  /*
   if !USE_DB {
     if _,ok := px.instances[seq]; !ok {
       px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
@@ -479,42 +481,60 @@ func (px *Paxos) GetInstance(seq int) *Instance {
   } else {
     instance := px.DBGetInstance(seq)
   }
-  */
+
   if _,ok := px.instances[seq]; !ok {
     px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
   }
   instance = px.instances[seq]
 
-  px.instanceDataLock.Unlock()
-
   db_inst := px.DBGetInstance(seq)
-  if !(InstEq(instance, db_inst)) {
-    log.Fatal("DB didn't work")
-  }
+  CheckInst(instance, db_inst)
+  px.instanceDataLock.Unlock()
 
   return instance
 }
 
 func (px *Paxos) DBGetInstance(seq int) *Instance {
   inst := new(Instance)
-  exists := px.db.GetStruct(METADATA, "instance" + strconv.Itoa(seq), inst)
+  inst_key := fmt.Sprintf("instance%d",seq)
+  exists := px.db.GetStruct(METADATA, inst_key, inst)
   if !exists {
     inst = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
-    px.db.PutStruct(METADATA, "instance" + strconv.Itoa(seq), inst)
+    px.db.PutStruct(METADATA, inst_key, inst)
+    px.AddOpenInstance(seq)
   }
   return inst
 }
 
 func (px *Paxos) PutInstance(seq int, inst *Instance) {
-  px.db.PutStruct(METADATA, "instance" + strconv.Itoa(seq), inst)
+  px.db.PutStruct(METADATA, fmt.Sprintf("instance%d",seq), inst)
 }
 
 func DupInstance(f *Instance) *Instance {
-  new_inst := &Instance{PrepareNum: f.PrepareNum, AcceptNum: f.AcceptNum, AcceptVal: f.AcceptVal, Decided: f.Decided}
-  if !(InstEq(f, new_inst)) {
+  new_inst := &Instance{}
+  Clone(f, new_inst)
+  if !reflect.DeepEqual(f,new_inst) {
     log.Fatal("Copy didn't work")
   }
   return new_inst
+}
+
+func Clone(a,b interface{}) {
+  buff := new(bytes.Buffer)
+  enc := gob.NewEncoder(buff)
+  dec := gob.NewDecoder(buff)
+  enc.Encode(a)
+  dec.Decode(b)
+}
+
+func CheckInst(a *Instance, b *Instance) {
+  if !(InstEq(a, b)) {
+    fmt.Println("R: %d, DB: %d", a.PrepareNum, b.PrepareNum)
+    fmt.Println("R: %d, DB: %d", a.AcceptNum, b.AcceptNum)
+    fmt.Println("R: %d, DB: %d", a.Decided, b.Decided)
+    fmt.Println("R: %s, DB: %s", a.AcceptVal, b.AcceptVal)
+    log.Fatal("DB didn't work")
+  }
 }
 
 func InstEq(a *Instance, b *Instance) bool {
@@ -535,8 +555,10 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
   } else {
     new_inst := DupInstance(instance)
     new_inst.PrepareNum = args.Num
-    px.PutInstance(args.Seq, new_inst)
+
     instance.PrepareNum = args.Num
+
+    px.PutInstance(args.Seq, new_inst)
 
     reply.Ok = true
     reply.Num = instance.AcceptNum
@@ -564,11 +586,13 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
     new_inst.PrepareNum = args.Num
     new_inst.AcceptNum = args.Num
     new_inst.AcceptVal = args.Val
-    px.PutInstance(args.Seq, new_inst)
 
     instance.PrepareNum = args.Num
     instance.AcceptNum = args.Num
     instance.AcceptVal = args.Val
+
+    px.PutInstance(args.Seq, new_inst)
+
     reply.Decided = instance.Decided
     reply.Num = args.Num
     reply.Ok = true
@@ -589,10 +613,12 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
     new_inst := DupInstance(instance)
     new_inst.AcceptVal = args.Val
     new_inst.Decided = true
-    px.PutInstance(args.Seq, new_inst)
 
     instance.AcceptVal = args.Val
     instance.Decided = true
+
+    px.PutInstance(args.Seq, new_inst)
+
     reply.Ok = true
   } else {
     reply.Ok = false
@@ -660,10 +686,17 @@ func (px *Paxos) EvalDone() int {
 
 func (px* Paxos) DeleteTo(done int) {
   px.instanceDataLock.Lock()
+  // In memory delete
   for key, _ := range px.instances {
     if key <= done {
       delete(px.instances, key)
-      px.db.Delete(METADATA, "instance" + strconv.Itoa(key))
+    }
+  }
+
+  // In DB delete
+  for key, _ := range px.GetOpenInstances() {
+    if key <= done {
+      px.DeleteInstance(key)
     }
   }
   px.instanceDataLock.Unlock()
@@ -755,6 +788,11 @@ func (px *Paxos) FreshStart(peers []string, me int) {
 
   // Init max in DB
   px.SetMax(-1)
+
+  // Sequence numbers of currently in flight instances
+  // Used for deleting
+  var current_instances map[int]bool
+  px.db.PutStruct(METADATA, "openinstances", current_instances)
 }
 
 func (px *Paxos) SetMax(max int) {
@@ -782,8 +820,28 @@ func (px *Paxos) UpdateMax(newVal int) {
   }
 }
 
+func (px *Paxos) GetOpenInstances() map[int]bool {
+  var i_set map[int]bool
+  set_exists := px.db.GetStruct(METADATA, "openinstances", &i_set)
+  if !set_exists {
+    log.Fatal("instance set not found")
+  }
+  return i_set
+}
 
+func (px *Paxos) AddOpenInstance(seq int) {
+  current_instances := px.GetOpenInstances()
+  current_instances[seq] = true
+  px.db.PutStruct(METADATA, "openinstances", current_instances)
+}
 
+func (px *Paxos) DeleteInstance(seq int) {
+  // TODO make this atomic
+  px.db.Delete(METADATA, fmt.Sprintf("instance%d",seq))
+  current_instances := px.GetOpenInstances()
+  delete(current_instances, seq)
+  px.db.PutStruct(METADATA, "openinstances", current_instances)
+}
 
 
 //##############################################################################
