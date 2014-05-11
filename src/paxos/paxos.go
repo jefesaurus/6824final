@@ -41,6 +41,7 @@ type Paxos struct {
 
   instances map[int]*Instance
   instancesLock sync.Mutex
+  instanceDataLock sync.RWMutex   
 
   max int
   maxLock sync.Mutex
@@ -122,6 +123,7 @@ func (px *Paxos) MultiPaxos() {
     
     px.LeaderLock.Lock()
     if px.Leader && reply.Leader != px.me {
+      fmt.Printf("Leader has changed, is now: %d\n", reply.Leader)
       px.Leader = false;
     }
 
@@ -162,6 +164,7 @@ func (px *Paxos) Start(seq int, val interface{}) {
   px.LeaderLock.RLock()
   leader := px.Leader
   px.LeaderLock.RUnlock()
+  fmt.Printf("servicing seq %d val %d\n", seq, val)
   if leader {
     go px.DoPaxos(seq, val)
   } else {
@@ -175,8 +178,10 @@ func (px *Paxos) ForwardRequest(seq int, val interface{}) {
     px.DetermineLeader(&LeaderArgs{}, reply)
     ok := call(px.peers[reply.Leader], "Paxos.ForwardedRequest", &ForwardedArgs{seq, val}, &ForwardedReply{})
     if ok { 
+      fmt.Printf("Forwarded request from %d to %d\n", px.me, reply.Leader)
       return 
     }
+    time.Sleep(10 * time.Millisecond)
   }
 }
 
@@ -199,12 +204,20 @@ proposer(v):
 func (px *Paxos) DoPaxos(seq int, val interface{}) {
   for !px.dead  {
     instance := px.GetInstance(seq);
+    px.instanceDataLock.RLock()
+    fmt.Printf("about to locking instance in DoPaxos\n")
+    instance.mu.Lock()
+    fmt.Printf("locking instance in DoPaxos\n")
+    instance.multi.Lock()
     if instance.decided {
-      instance.mu.Unlock()
+      px.instanceDataLock.RUnlock()
+    fmt.Printf("unlocking instance in DoPaxos\n")
+      instance.multi.Unlock()
       return
     }
-    instance.mu.Unlock()
-    instance.multi.Lock()
+    px.instanceDataLock.RUnlock()
+    fmt.Printf("unlocking instance in DoPaxos\n")
+    fmt.Printf("starting paxos\n")
     // Choose and n that is unique and higher than anything seen before
     proposalNum := (time.Now().UnixNano() << 8) + int64(px.me)
     //numPrepareOks := 0
@@ -247,13 +260,20 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
     */
     numAcceptOks := 0
     if true { //numPrepareOks > px.majority {
+      
       for peerIndex, _ := range px.peers {
+        fmt.Printf("peer Index %d, my index %d", peerIndex, px.me)
         args := AcceptArgs{Seq: seq, Num: proposalNum, Val: maxProposalVal, Done: px.mins[px.me], Me: px.me}
         var reply AcceptReply
         ok := true
         rpc := make(chan bool, 1)
         if peerIndex == px.me {
           px.Accept(&args, &reply)
+          if reply.Decided {
+            instance.multi.Unlock()
+    fmt.Printf("finished paxos\n")
+            return
+          }
           if ok && reply.Ok {
             numAcceptOks ++
           }
@@ -262,6 +282,11 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
           go func() { rpc <- call(px.peers[peerIndex], "Paxos.Accept", &args, &reply) }()
           select {
             case ok = <- rpc:
+              if reply.Decided {
+                instance.multi.Unlock()
+    fmt.Printf("finished paxos\n")
+                return
+              }
               if ok && reply.Ok {
                 numAcceptOks ++
               }
@@ -270,10 +295,11 @@ func (px *Paxos) DoPaxos(seq int, val interface{}) {
           }
         }
       }
-
+      fmt.Printf("Num accepts %d\n", numAcceptOks)
       if numAcceptOks > px.majority {
         px.SendDecides(seq, proposalNum, maxProposalVal)
         instance.multi.Unlock()
+    fmt.Printf("finished paxos\n")
         return
       }
       fmt.Printf("Not enough accepts\n")
@@ -299,53 +325,50 @@ func (px *Paxos) UpdateMax(newVal int) {
 
 
 func (px *Paxos) SendDecides(seq int, proposalNum int64, val interface{}) {
-  for peerIndex, _ := range px.peers {
-    args := DecidedArgs{Seq: seq, Val: val, Num: proposalNum}
-    var reply DecidedReply
-    if peerIndex == px.me {
-      px.Decided(&args, &reply)
-    } else {
-      call(px.peers[peerIndex], "Paxos.Decided", &args, &reply)
+  fmt.Printf("sending decides\n")
+  decided := 0
+  peers := make(map[int]string)
+  for peerIndex, peer := range px.peers {
+    peers[peerIndex] = peer
+  }
+  for decided <= px.majority {
+    for peerIndex, _ := range peers {
+      args := DecidedArgs{Seq: seq, Val: val, Num: proposalNum}
+      var reply DecidedReply
+      if peerIndex == px.me {
+        px.Decided(&args, &reply)
+        delete(peers, peerIndex)
+        decided ++
+      } else {
+        ok := call(px.peers[peerIndex], "Paxos.Decided", &args, &reply)
+        if ok {
+          delete(peers, peerIndex)
+          decided ++
+        }
+      }
     }
   }
+  fmt.Printf("done sending decides\n")
 }
 
 func (px *Paxos) GetInstance(seq int) *Instance {
-  px.instancesLock.Lock()
-  defer px.instancesLock.Unlock()
-
+  px.instanceDataLock.Lock()
+  defer px.instanceDataLock.Unlock()
+  //px.instancesLock.Lock()
   if _,ok := px.instances[seq]; !ok {
     px.instances[seq] = &Instance{prepareNum: -1, acceptNum: -1, acceptVal: nil, decided: false}
   }
-  px.instances[seq].mu.Lock()
+  //px.instancesLock.Unlock()
   return px.instances[seq]
 }
-
-func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
-  px.UpdateMins(args.Me, args.Done)
-  px.UpdateMax(args.Seq)
-
-  instance := px.GetInstance(args.Seq)
-  if instance.prepareNum >= args.Num {
-    reply.Ok = false
-    reply.Num = instance.prepareNum
-  } else {
-    reply.Ok = true
-    reply.Num = instance.acceptNum
-    reply.Val = instance.acceptVal
-    instance.prepareNum = args.Num
-  }
-  instance.mu.Unlock()
-  reply.Done = px.EvalDone()
-  return nil
-}
-
 
 func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   px.UpdateMins(args.Me, args.Done)
   px.UpdateMax(args.Seq)
-
   instance := px.GetInstance(args.Seq)
+  fmt.Printf("about to lcok instance in accept\n")
+  px.instanceDataLock.Lock()
+  fmt.Printf("Locked instance in accept\n")
   if args.Num >= instance.prepareNum {
     instance.prepareNum = args.Num
     instance.acceptNum = args.Num
@@ -356,7 +379,8 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
   } else {
     reply.Ok = false
   }
-  instance.mu.Unlock()
+  px.instanceDataLock.Unlock()
+  fmt.Printf("unocked instance in accept\n")
   reply.Done = px.EvalDone()
   return nil
 }
@@ -365,7 +389,9 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
   px.UpdateMax(args.Seq)
 
   instance := px.GetInstance(args.Seq)
-  defer instance.mu.Unlock()
+  fmt.Printf("about to lcok instance in decided\n")
+  px.instanceDataLock.Lock()
+  fmt.Printf("locked instance in decided\n")
   if !instance.decided {
     instance.acceptVal = args.Val
     instance.decided = true
@@ -373,6 +399,8 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
   } else {
     reply.Ok = false
   }
+  px.instanceDataLock.Unlock()
+  fmt.Printf("unocked instance in decided\n")
   return nil
 }
 
@@ -445,14 +473,15 @@ func (px *Paxos) EvalDone() int {
 }
 
 func (px* Paxos) DeleteTo(done int) {
+  fmt.Printf("DELEtiNG\n")
   px.instancesLock.Lock()
-  defer px.instancesLock.Unlock()
   for key, instance := range px.instances {
     if key <= done {
       instance.mu.Lock()
       delete(px.instances, key)
     }
   }
+  px.instancesLock.Unlock()
 }
 
 
@@ -465,7 +494,8 @@ func (px* Paxos) DeleteTo(done int) {
 //
 func (px *Paxos) Status(seq int) (bool, interface{}) {
   instance := px.GetInstance(seq)
-  defer instance.mu.Unlock()
+  px.instanceDataLock.RLock()
+  defer px.instanceDataLock.RUnlock()
   return instance.decided, instance.acceptVal
 }
 
