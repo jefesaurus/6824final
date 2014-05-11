@@ -358,6 +358,12 @@ func doConcurrentThroughput(t *testing.T, unreliable bool) {
   }
 }
 
+func TestConcurrent(t *testing.T) {
+  fmt.Printf("Test: Concurrent Put/Get/Move ...\n")
+  doConcurrent(t, false)
+  fmt.Printf("  ... Passed\n")
+}
+
 func TestThroughput(t *testing.T) {
   fmt.Printf("Test throughput on concurrent Put/Get ...\n")
   s := time.Now()
@@ -366,11 +372,6 @@ func TestThroughput(t *testing.T) {
   fmt.Printf("Completed in %v ...\n", e.Sub(s))
 }
 
-func TestConcurrent(t *testing.T) {
-  fmt.Printf("Test: Concurrent Put/Get/Move ...\n")
-  doConcurrent(t, false)
-  fmt.Printf("  ... Passed\n")
-}
 
 func TestConcurrentUnreliable(t *testing.T) {
   fmt.Printf("Test: Concurrent Put/Get/Move (unreliable) ...\n")

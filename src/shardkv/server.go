@@ -78,6 +78,77 @@ type ShardKV struct {
 
   record_level int // Level of usable records for download
   config_mu sync.Mutex // Locks the main config
+
+  min_confignums map[int64]int
+  config_to_seq map[int]int
+  confignums_lock sync.Mutex
+}
+
+func (kv *ShardKV) ManageConfigMins() {
+  for !kv.dead {
+    //determine our local min
+    min_seq := kv.px.Min() - 1
+    kv.confignums_lock.Lock() 
+    max_config := kv.min_confignums[kv.gid]
+    for key, val := range kv.config_to_seq {
+      if min_seq >= val && key > max_config {
+        max_config = key
+        delete(kv.config_to_seq, key)
+      } 
+    }
+    kv.min_confignums[kv.gid] = max_config 
+    kv.confignums_lock.Unlock() 
+
+    //Forget old config nums
+    mini := kv.MinGlobalConfigNum()
+    for key, _ := range kv.shard_record {
+      if key <= mini {
+        delete(kv.shard_record, key)
+        delete(kv.reply_record, key)
+      }      
+    }
+ 
+    //Send out our min to peers
+    conf := kv.config
+    for gid, peers := range conf.Groups {
+      for _, server := range peers {
+        reply := &MinConfigReply{}
+        rpc := make(chan bool, 1)
+        go func() { rpc <- call(server, "ShardKV.MinConfig", &MinConfigArgs{kv.gid, max_config}, reply) }()
+        select {
+          case ok := <- rpc:
+            if ok {
+              kv.confignums_lock.Lock()
+              kv.min_confignums[gid] = min(kv.min_confignums[gid], reply.Min)
+              kv.confignums_lock.Unlock()
+              break
+            }
+          case <-time.After(time.Second):
+        }
+      }
+    }
+    time.Sleep(10 * time.Second)
+  }
+}
+
+func (kv *ShardKV) MinConfig(args *MinConfigArgs, reply *MinConfigReply) error {
+  kv.confignums_lock.Lock()
+  kv.min_confignums[args.Me] = min(kv.min_confignums[args.Me], args.Min)
+  kv.confignums_lock.Unlock()
+  reply.Min = kv.min_confignums[kv.gid]  
+  return nil
+}
+
+func (kv *ShardKV) MinGlobalConfigNum() int {
+  min := (int) (^uint(0) >> 1)
+  kv.confignums_lock.Lock()
+  defer kv.confignums_lock.Unlock()
+  for _, val := range kv.min_confignums {
+    if val < min {
+      min = val
+    }
+  }
+  return min
 }
 
 func (kv *ShardKV) Get(args *GetArgs, reply *GetReply) error {
@@ -171,7 +242,7 @@ func (kv *ShardKV) InitNewConfig(new_config shardmaster.Config) {
       }
     }
   }
-
+  
   // At this point, the records are good up to this level
   kv.record_level = old_config.Num
 
@@ -187,6 +258,18 @@ func (kv *ShardKV) InitNewConfig(new_config shardmaster.Config) {
     }
   }
   kv.SetConfig(new_config)
+  kv.confignums_lock.Lock()
+  defer kv.confignums_lock.Unlock()
+  for gid, _ := range new_config.Groups {
+    if _, ok := kv.min_confignums[gid]; !ok {
+      kv.min_confignums[gid] = new_config.Num
+    }
+  }
+  for gid, _ := range kv.min_confignums {
+    if _, ok := new_config.Groups[gid]; !ok {
+      delete(kv.min_confignums, gid)
+    }
+  }
 }
 
 // Swoop data from other replica groups
@@ -236,7 +319,7 @@ func (kv *ShardKV) LogWalker() {
   timeout := 10
   for !kv.dead {
     if decided, op_data := kv.px.Status(seq); decided {
-      kv.ApplyOp(op_data.(Op))
+      kv.ApplyOp(op_data.(Op), seq)
       kv.px.Done(seq)
       seq++
       timeout = 10
@@ -252,7 +335,7 @@ func (kv *ShardKV) LogWalker() {
   }
 }
 
-func (kv *ShardKV) ApplyOp(op Op) {
+func (kv *ShardKV) ApplyOp(op Op, seq int) {
   kv.mu.Lock()
   defer kv.mu.Unlock()
 
@@ -288,6 +371,7 @@ func (kv *ShardKV) ApplyOp(op Op) {
       if op.ConfigNum == kv.config.Num + 1 {
         new_config := kv.sm.Query(op.ConfigNum) // Get next configuration
         kv.InitNewConfig(new_config)            // Initialize it
+        kv.config_to_seq[op.ConfigNum] = seq 
       }
     }
     if reply_err != ErrWrongGroup {
@@ -370,6 +454,8 @@ func StartServer(gid int64, shardmasters []string,
   rpcs.Register(kv)
 
   kv.px = paxos.Make(servers, me, rpcs)
+  kv.min_confignums = make(map[int64]int)
+  kv.config_to_seq = make(map[int]int)
 
   os.Remove(servers[me])
   l, e := net.Listen("unix", servers[me]);
@@ -379,7 +465,7 @@ func StartServer(gid int64, shardmasters []string,
   kv.l = l
 
   go kv.LogWalker()
-
+  go kv.ManageConfigMins()
   // please do not change any of the following code,
   // or do anything to subvert it.
 

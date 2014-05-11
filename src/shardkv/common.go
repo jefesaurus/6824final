@@ -21,6 +21,15 @@ const (
 )
 type Err string
 
+type MinConfigArgs struct {
+  Me int64
+  Min int
+}
+
+type MinConfigReply struct {
+  Min int
+}
+
 type PutArgs struct {
   Key string
   Value string
@@ -89,6 +98,19 @@ func key2shard(key string) int {
   }
   shard %= shardmaster.NShards
   return shard
+}
+func max(a int, b int) int {
+  if a > b {
+    return a
+  }
+  return b
+}
+
+func min(a int, b int) int {
+  if a < b {
+    return a
+  }
+  return b
 }
 
 func nrandint() int {
