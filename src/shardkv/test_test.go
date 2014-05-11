@@ -313,6 +313,58 @@ func doConcurrent(t *testing.T, unreliable bool) {
     }
   }
 }
+func doConcurrentThroughput(t *testing.T, unreliable bool) {
+  smh, gids, ha, _, clean := setup("conc"+strconv.FormatBool(unreliable), unreliable)
+  defer clean()
+
+  mck := shardmaster.MakeClerk(smh)
+  for i := 0; i < len(gids); i++ {
+    mck.Join(gids[i], ha[i])
+  }
+
+  const npara = 11
+  var ca [npara]chan bool
+  for i := 0; i < npara; i++ {
+    ca[i] = make(chan bool)
+    go func(me int) {
+      ok := true
+      defer func() { ca[me] <- ok }()
+      ck := MakeClerk(smh)
+      key := strconv.Itoa(me)
+      last := ""
+      for iters := 0; iters < 3; iters++ {
+        nv := strconv.Itoa(rand.Int())
+        v := ck.PutHash(key, nv)
+        if v != last {
+          ok = false
+          t.Fatalf("PutHash(%v) expected %v got %v\n", key, last, v)
+        }
+        last = NextValue(last, nv)
+        v = ck.Get(key)
+        if v != last {
+          ok = false
+          t.Fatalf("Get(%v) expected %v got %v\n", key, last, v)
+        }
+        time.Sleep(time.Duration(rand.Int() % 30) * time.Millisecond)
+      }
+    }(i)
+  }
+
+  for i := 0; i < npara; i++ {
+    x := <- ca[i]
+    if x == false {
+      t.Fatalf("something is wrong")
+    }
+  }
+}
+
+func TestThroughput(t *testing.T) {
+  fmt.Printf("Test throughput on concurrent Put/Get ...\n")
+  s := time.Now()
+  doConcurrentThroughput(t, false)
+  e := time.Now()
+  fmt.Printf("Completed in %v ...\n", e.Sub(s))
+}
 
 func TestConcurrent(t *testing.T) {
   fmt.Printf("Test: Concurrent Put/Get/Move ...\n")
