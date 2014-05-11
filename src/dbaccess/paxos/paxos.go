@@ -464,7 +464,8 @@ func (px *Paxos) SendDecides(seq int, proposalNum int64, val interface{}) {
   }
 }
 
-const USE_DB = true
+const USE_MEM = true
+
 func (px *Paxos) GetInstance(seq int) *Instance {
   px.instanceDataLock.Lock()
   _, has_lock := px.multi_locks[seq]
@@ -473,22 +474,14 @@ func (px *Paxos) GetInstance(seq int) *Instance {
   }
   var instance *Instance
 
-  if !USE_DB {
+  if !USE_MEM {
     if _,ok := px.instances[seq]; !ok {
       px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
     }
     instance = px.instances[seq]
   } else {
-    instance := px.DBGetInstance(seq)
+    instance = px.DBGetInstance(seq)
   }
-
-  if _,ok := px.instances[seq]; !ok {
-    px.instances[seq] = &Instance{PrepareNum: -1, AcceptNum: -1, AcceptVal: nil, Decided: false}
-  }
-  instance = px.instances[seq]
-
-  db_inst := px.DBGetInstance(seq)
-  CheckInst(instance, db_inst)
   px.instanceDataLock.Unlock()
 
   return instance
@@ -556,7 +549,9 @@ func (px *Paxos) Prepare(args *PrepareArgs, reply *PrepareReply) error {
     new_inst := DupInstance(instance)
     new_inst.PrepareNum = args.Num
 
-    instance.PrepareNum = args.Num
+    if USE_MEM {
+      instance.PrepareNum = args.Num
+    }
 
     px.PutInstance(args.Seq, new_inst)
 
@@ -587,9 +582,11 @@ func (px *Paxos) Accept(args *AcceptArgs, reply *AcceptReply) error {
     new_inst.AcceptNum = args.Num
     new_inst.AcceptVal = args.Val
 
-    instance.PrepareNum = args.Num
-    instance.AcceptNum = args.Num
-    instance.AcceptVal = args.Val
+    if USE_MEM {
+      instance.PrepareNum = args.Num
+      instance.AcceptNum = args.Num
+      instance.AcceptVal = args.Val
+    }
 
     px.PutInstance(args.Seq, new_inst)
 
@@ -614,8 +611,10 @@ func (px *Paxos) Decided(args *DecidedArgs, reply *DecidedReply) error {
     new_inst.AcceptVal = args.Val
     new_inst.Decided = true
 
-    instance.AcceptVal = args.Val
-    instance.Decided = true
+    if USE_MEM {
+      instance.AcceptVal = args.Val
+      instance.Decided = true
+    }
 
     px.PutInstance(args.Seq, new_inst)
 
@@ -686,17 +685,17 @@ func (px *Paxos) EvalDone() int {
 
 func (px* Paxos) DeleteTo(done int) {
   px.instanceDataLock.Lock()
-  // In memory delete
-  for key, _ := range px.instances {
-    if key <= done {
-      delete(px.instances, key)
+  if USE_MEM {
+    for key, _ := range px.instances {
+      if key <= done {
+        delete(px.instances, key)
+      }
     }
-  }
-
-  // In DB delete
-  for key, _ := range px.GetOpenInstances() {
-    if key <= done {
-      px.DeleteInstance(key)
+  } else {
+    for key, _ := range px.GetOpenInstances() {
+      if key <= done {
+        px.DeleteInstance(key)
+      }
     }
   }
   px.instanceDataLock.Unlock()
