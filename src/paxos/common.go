@@ -11,6 +11,12 @@ type Instance struct {
   multi sync.Mutex
 }
 
+type GetMaxArgs struct {
+}
+
+type GetMaxReply struct {
+  Max int
+}
 type GetValueArgs struct {
   Seq int
 }
