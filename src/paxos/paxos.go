@@ -78,8 +78,8 @@ func call(srv string, name string, args interface{}, reply interface{}) bool {
 }
 
 const (
-  PING_INTERVAL = time.Second * 5
-  LEADER_LEASE = PING_INTERVAL * 2
+  PING_INTERVAL = time.Second * 2
+  LEADER_LEASE = PING_INTERVAL * 5
   PING_TIMEOUT = time.Millisecond * 100
   PAXOS_TIMEOUT = time.Second * 3
 )
