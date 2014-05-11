@@ -97,13 +97,14 @@ func (px *Paxos) MultiPaxos() {
       }
       reply := &PingReply{}
       rpc := make(chan bool, 1)
-      go func() { rpc <- call(server, "Paxos.Ping", &PingArgs{px.me}, reply)} ()
+      go func() { rpc <- call(server, "Paxos.Ping", &PingArgs{px.me, px.mins[px.me]}, reply)} ()
       select {
         case ok := <- rpc:
           if ok && reply.OK { //This should be ok assuming communciation is bidirectional
             px.PingLock.Lock()
             px.PingTimes[index] = time.Now()
             px.PingLock.Unlock()
+            px.UpdateMins(index, reply.Done)
           }
         case <-time.After(PING_TIMEOUT):
       }
@@ -123,7 +124,6 @@ func (px *Paxos) MultiPaxos() {
     
     px.LeaderLock.Lock()
     if px.Leader && reply.Leader != px.me {
-      //fmt.Printf("Leader has changed, is now: %d\n", reply.Leader)
       px.Leader = false;
     }
 
@@ -141,7 +141,8 @@ func (px *Paxos) Ping(args *PingArgs, reply *PingReply) error {
   px.PingLock.Lock()
   px.PingTimes[args.Me] = time.Now()
   px.PingLock.Unlock()
-  reply.OK = true  
+  reply.OK = true 
+  px.UpdateMins(args.Me, args.Done) 
   return nil 
 }
 
@@ -303,6 +304,7 @@ func (px *Paxos) UpdateMins(index int, newVal int) {
   }
   px.minsLock.Unlock()
 }
+
 func (px *Paxos) UpdateMax(newVal int) {
   px.maxLock.Lock()
   if px.max < newVal {

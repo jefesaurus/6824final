@@ -7,7 +7,7 @@ type Instance struct {
   acceptNum int64 // Highest accept number
   acceptVal interface{} // Highest accept value
   decided bool
-  mu sync.Mutex
+  //mu sync.Mutex
   multi sync.Mutex
 }
 
@@ -21,10 +21,12 @@ type ForwardedReply struct {
 
 type PingArgs struct {
   Me int
+  Done int
 }
 
 type PingReply struct {
   OK bool
+  Done int
 }
 
 type LeaderArgs struct {

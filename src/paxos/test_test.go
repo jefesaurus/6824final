@@ -204,6 +204,33 @@ func TestDeaf(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
+func TestNewLeader (t *testing.T) {
+  runtime.GOMAXPROCS(4)
+
+  const npaxos = 5
+  var pxa []*Paxos = make([]*Paxos, npaxos)
+  var pxh []string = make([]string, npaxos)
+  defer cleanup(pxa)
+
+  for i := 0; i < npaxos; i++ {
+    pxh[i] = port("leader", i)
+  }
+  for i := 0; i < npaxos; i++ {
+    pxa[i] = Make(pxh, i, nil)
+  }
+  fmt.Printf("Test: First leader ...\n")
+  pxa[npaxos-1].Start(0,0)
+  waitn(t, pxa, 0, npaxos)
+  fmt.Printf("... Passed\n")
+  
+  fmt.Printf("New leader emerges ...\n")
+  pxa[npaxos-1].dead = true
+  time.Sleep(15 * time.Second)
+  pxa[0].Start(1,1)
+  waitn(t, pxa, 1, npaxos - 1)
+  fmt.Printf("... Passed\n")
+} 
+
 func TestThroughput(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
