@@ -761,9 +761,6 @@ func (px *Paxos) TryRestoreFromDisk() bool {
   if !peers_exists {
     return false
   }
-  for _, peer := range stored_peers {
-    println(peer)
-  }
 
   // Make sure it has the max
   _, max_exists := px.db.GetInt(METADATA, "max");

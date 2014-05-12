@@ -227,6 +227,24 @@ func TestRestart(t *testing.T) {
   waitn(t, pxa, 0, npaxos)
 
   // Kill all of them, leave DB's intact
+  fmt.Printf("Test: Kill all and restart ...\n")
+  for i := 0; i < len(pxa); i++ {
+    if pxa[i] != nil {
+      pxa[i].Kill()
+    }
+  }
+
+  // Start them all up from DB
+  for i := 0; i < npaxos; i++ {
+    pxa[i] = MakeFromDB(pxh[i])
+  }
+
+  pxa[0].Start(1, "diditwork")
+  waitn(t, pxa, 1, npaxos)
+
+  //Kill three of them in the middle of work
+  // restart 1 and wait for agreement
+  fmt.Printf("Test: Kill all and restart...\n")
   for i := 0; i < len(pxa); i++ {
     if pxa[i] != nil {
       pxa[i].Kill()
@@ -236,9 +254,24 @@ func TestRestart(t *testing.T) {
   for i := 0; i < npaxos; i++ {
     pxa[i] = MakeFromDB(pxh[i])
   }
+  pxa[0].Start(2, "diditwork2")
+  pxa[0].Start(3, "diditwork3")
+  pxa[0].Start(4, "diditwork4")
+  pxa[0].Start(5, "diditwork5")
+  pxa[1].Kill()
+  pxa[2].Kill()
+  pxa[3].Kill()
 
-  pxa[0].Start(1, "diditwork")
-  waitn(t, pxa, 1, npaxos)
+  time.Sleep(2 * time.Second)
+
+  pxa[3] = MakeFromDB(pxh[3])
+
+  time.Sleep(2 * time.Second)
+
+  waitn(t, pxa, 2, npaxos-2)
+  waitn(t, pxa, 3, npaxos-2)
+  waitn(t, pxa, 4, npaxos-2)
+  waitn(t, pxa, 5, npaxos-2)
 
   // Kill a few of them
   for i := 0; i < len(pxa); i++ {
