@@ -31,7 +31,6 @@ type ShardMaster struct {
 
   configs []Config // indexed by config num
   queryReplies map[int]Config // Keep track of replies
-  doneWith map[int]bool // Ops that are totally done
 }
 
 const (
@@ -77,7 +76,7 @@ func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
 
 func (sm *ShardMaster) StartAndFinishOp(op Op) int {
   seq := sm.ForceSubmitOp(op)
-  for !sm.doneWith[seq] {
+  for !sm.GetDone(seq) {
     time.Sleep(2 * time.Millisecond)
   }
   sm.px.Done(seq - 1)
@@ -95,7 +94,7 @@ func (sm *ShardMaster) ForceSubmitOp(op Op) int {
 }
 
 func (sm *ShardMaster) SubmitOp(op Op, seq int) bool {
-  if sm.doneWith[seq] {
+  if sm.GetDone(seq) {
     decided, acceptVal := sm.px.Status(seq)
     return decided && OpEquals(acceptVal.(Op), op)
   }
@@ -160,7 +159,6 @@ func (sm *ShardMaster) ApplyOp(seq int, op Op) bool {
       }
       sm.PutConfig(config_num, &conf)
     }
-    //sm.doneWith[seq] = true
     sm.SetDone(seq)
     return true
   }
@@ -302,16 +300,11 @@ func (sm *ShardMaster) GetReply(seq int) Config {
 }
 
 func (sm *ShardMaster) SetDone(seq int) {
-  sm.doneWith[seq] = true
   sm.DBSetDone(seq)
 }
 
 func (sm *ShardMaster) GetDone(seq int) bool {
-  mem_done := sm.doneWith[seq]
   db_done := sm.DBGetDone(seq)
-  if mem_done != db_done {
-    fmt.Println("NOT EQUAL")
-  }
   return db_done
 }
 
@@ -386,6 +379,27 @@ func (sm *ShardMaster) Kill() {
 
 const db_path = "/tmp/smdb/"
 
+func StartServerFromDB(me string) *ShardMaster {
+  gob.Register(Op{})
+  sm := new(ShardMaster)
+  path_parts := strings.Split(me, "/")
+  sm.db_path = db_path + path_parts[len(path_parts)-1]
+  sm.db = dbaccess.GetDatabase(sm.db_path)
+
+  me_index, me_exists := sm.db.GetInt(METADATA, "me")
+  if !me_exists {
+    log.Fatal("couldn't find me, start from DB")
+  }
+
+  stored_servers, servers_exists := sm.db.GetStringList(METADATA, "servers")
+  if !servers_exists {
+    log.Fatal("couldn't find servers start from DB")
+  }
+
+  FinishStartServer(sm, stored_servers, me_index)
+  return sm
+}
+
 func (sm *ShardMaster) FreshStart(servers []string, me int) {
   // Put my index
   sm.db.PutInt(METADATA, "me", me)
@@ -423,13 +437,6 @@ func StartServer(servers []string, me int) *ShardMaster {
 // me is the index of the current server in servers[].
 // 
 func FinishStartServer(sm *ShardMaster, servers []string, me int) *ShardMaster {
-
-  //sm.configs = make([]Config, 1)
-  //sm.configs[0].Groups = map[int64][]string{}
-
-  //sm.queryReplies = make(map[int]Config)
-
-  sm.doneWith = make(map[int]bool)
 
   rpcs := rpc.NewServer()
   rpcs.Register(sm)
