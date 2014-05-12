@@ -721,7 +721,7 @@ func TestOld(t *testing.T) {
 //
 // many agreements, with unreliable RPC
 //
-/**func TestManyUnreliable(t *testing.T) {
+func TestManyUnreliable(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
   fmt.Printf("Test: Many instances, unreliable RPC ...\n")
@@ -764,10 +764,9 @@ func TestOld(t *testing.T) {
     }
     time.Sleep(100 * time.Millisecond)
   }
-  
   fmt.Printf("  ... Passed\n")
 }
-**/
+
 func pp(tag string, src int, dst int) string {
   s := "/var/tmp/824-"
   s += strconv.Itoa(os.Getuid()) + "/"

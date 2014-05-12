@@ -7,6 +7,7 @@ import "os"
 // import "time"
 import "fmt"
 import "math/rand"
+import "time"
 
 func port(tag string, host int) string {
   s := "/var/tmp/824-"
@@ -359,8 +360,9 @@ func TestFreshQuery(t *testing.T) {
     t.Fatalf("os.Rename() failed")
   }
   ck0 := MakeClerk([]string{portx})
-
+  time.Sleep(1000)
   ck1.Join(1001, []string{"a", "b", "c"})
+  time.Sleep(1000)
   c := ck0.Query(-1)
   _, ok := c.Groups[1001]
   if ok == false {

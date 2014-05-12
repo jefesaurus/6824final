@@ -92,6 +92,14 @@ func (ck *DBClerk) GetInt(table Table, key string) (int, bool) {
   return int(val), (err == nil)
 }
 
+func (ck *DBClerk) QuietGetInt(table Table, key string) (int, bool) {
+  table_key := append([]byte{byte(table)}, []byte(key)...)
+  bytes, err := ck.db.Get(table_key, nil)
+
+  val, _ := binary.Varint(bytes)
+  return int(val), (err == nil)
+}
+
 func (ck *DBClerk) KeyExists(table Table, key string) bool {
   table_key := append([]byte{byte(table)}, []byte(key)...)
   _, err := ck.db.Get(table_key, nil)
