@@ -208,6 +208,59 @@ func TestDeaf(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
+func TestRestart(t *testing.T) {
+  runtime.GOMAXPROCS(4)
+
+  const npaxos = 5
+  var pxa []*Paxos = make([]*Paxos, npaxos)
+  var pxh []string = make([]string, npaxos)
+  defer cleanup(pxa)
+
+  for i := 0; i < npaxos; i++ {
+    pxh[i] = port("basic", i)
+  }
+  for i := 0; i < npaxos; i++ {
+    pxa[i] = Make(pxh, i, nil)
+  }
+
+  pxa[0].Start(0, "hello")
+  waitn(t, pxa, 0, npaxos)
+
+  // Kill all of them, leave DB's intact
+  for i := 0; i < len(pxa); i++ {
+    if pxa[i] != nil {
+      pxa[i].Kill()
+    }
+  }
+
+  for i := 0; i < npaxos; i++ {
+    pxa[i] = MakeFromDB(pxh[i])
+  }
+
+  pxa[0].Start(1, "diditwork")
+  waitn(t, pxa, 1, npaxos)
+
+  // Kill a few of them
+  for i := 0; i < len(pxa); i++ {
+    if pxa[i] != nil {
+      pxa[i].Kill()
+    }
+  }
+
+  pxa[0] = MakeFromDB(pxh[0])
+  pxa[1] = MakeFromDB(pxh[1])
+  pxa[2].KillDisk()
+  os.Remove(pxh[2])
+  pxa[3].KillDisk()
+  os.Remove(pxh[3])
+  pxa[4] = MakeFromDB(pxh[4])
+
+  pxa[0].Start(2, "mightwork")
+  waitn(t, pxa, 2, npaxos-2)
+
+  fmt.Printf("  ... Passed\n")
+}
+
 func TestNewLeader (t *testing.T) {
   runtime.GOMAXPROCS(4)
 

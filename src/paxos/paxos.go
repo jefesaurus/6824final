@@ -48,6 +48,7 @@ type Paxos struct {
   rpcCount int
 
   db *dbaccess.DBClerk
+  db_path string
 
   peers []string
   me int // index into peers[]
@@ -749,13 +750,13 @@ func (px *Paxos) SetPeerMin(peer_index int, min int) {
 }
 
 func (px *Paxos) TryRestoreFromDisk() bool {
+  // Get me
   me, me_exists := px.db.GetInt(METADATA, "me")
   if !me_exists {
     return false
   }
 
-  // First get list of peers
-  // me is 0
+  // Get list of peers
   stored_peers, peers_exists := px.db.GetStringList(METADATA, "peers")
   if !peers_exists {
     return false
@@ -778,6 +779,9 @@ func (px *Paxos) TryRestoreFromDisk() bool {
       return false
     }
   }
+
+  var current_instances map[int]bool
+  px.db.GetStruct(METADATA, "openinstances", current_instances)
 
   // Commit some statics to local state:
   px.me = me
@@ -851,7 +855,6 @@ func (px *Paxos) AddOpenInstance(seq int) {
 }
 
 func (px *Paxos) DeleteInstance(seq int) {
-  // TODO make this atomic
   px.db.Delete(METADATA, fmt.Sprintf("instance%d",seq))
   current_instances := px.GetOpenInstances()
   delete(current_instances, seq)
@@ -880,6 +883,14 @@ func (px *Paxos) Kill() {
   }
 }
 
+
+func (px *Paxos) KillDisk() {
+  err := os.RemoveAll(px.db_path)
+  if err != nil {
+    log.Fatal("db not found")
+  }
+}
+
 //
 // the application wants to create a paxos peer.
 // the ports of all the paxos peers (including this one)
@@ -887,23 +898,28 @@ func (px *Paxos) Kill() {
 //
 const db_path = "/tmp/pxdb/"
 
-func MakeFromDB(me string) {
+func MakeFromDB(me string) *Paxos {
+
   px := &Paxos{}
-  px.db = dbaccess.GetDatabase(db_path + me)
+  path_parts := strings.Split(me, "/")
+  px.db_path = db_path + path_parts[len(path_parts)-1]
+  px.db = dbaccess.GetDatabase(px.db_path)
 
   did_restore := px.TryRestoreFromDisk()
   if !did_restore {
     log.Fatal("RESTORE FROM DB FAILED")
   }
-}
 
+  FinishMake(px, nil)
+  return px
+}
 
 func Make(peers []string, me int, rpcs *rpc.Server) *Paxos {
   px := &Paxos{}
   path_parts := strings.Split(peers[me], "/")
-  px_db_path := db_path + path_parts[len(path_parts)-1]
-  os.Remove(px_db_path)
-  px.db = dbaccess.GetDatabase(px_db_path)
+  px.db_path = db_path + path_parts[len(path_parts)-1]
+  os.Remove(px.db_path)
+  px.db = dbaccess.GetDatabase(px.db_path)
   px.FreshStart(peers, me)
   FinishMake(px, rpcs)
   return px
