@@ -895,7 +895,7 @@ func (px *Paxos) KillDisk() {
 //
 const db_path = "/tmp/pxdb/"
 
-func MakeFromDB(me string) *Paxos {
+func MakeFromDB(me string, rpcs *rpc.Server) *Paxos {
 
   px := &Paxos{}
   path_parts := strings.Split(me, "/")
@@ -907,7 +907,7 @@ func MakeFromDB(me string) *Paxos {
     log.Fatal("RESTORE FROM DB FAILED")
   }
 
-  FinishMake(px, nil)
+  FinishMake(px, rpcs)
   return px
 }
 

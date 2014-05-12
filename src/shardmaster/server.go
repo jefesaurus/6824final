@@ -396,22 +396,18 @@ func StartServerFromDB(me string) *ShardMaster {
     log.Fatal("couldn't find servers start from DB")
   }
 
-  FinishStartServer(sm, stored_servers, me_index)
+  _, val_exists := sm.db.GetInt(METADATA, "num_configs")
+  if !val_exists {
+    log.Fatal("DB not consistent")
+  }
+
+  rpcs := rpc.NewServer()
+  rpcs.Register(sm)
+
+  sm.px = paxos.MakeFromDB(stored_servers[me_index], rpcs)
+
+  FinishStartServer(sm, stored_servers, me_index, rpcs)
   return sm
-}
-
-func (sm *ShardMaster) FreshStart(servers []string, me int) {
-  // Put my index
-  sm.db.PutInt(METADATA, "me", me)
-  sm.me = me
-
-  // Enter peers
-  sm.db.PutStringList(METADATA, "servers", servers)
-
-  first_conf := new(Config)
-  first_conf.Groups = map[int64][]string{}
-  sm.DBPutConfig(0, first_conf)
-  sm.db.PutInt(METADATA, "num_configs", 1)
 }
 
 func StartServer(servers []string, me int) *ShardMaster {
@@ -423,8 +419,23 @@ func StartServer(servers []string, me int) *ShardMaster {
   os.Remove(sm.db_path)
   sm.db = dbaccess.GetDatabase(sm.db_path)
 
-  sm.FreshStart(servers, me)
-  FinishStartServer(sm, servers, me)
+  // Put my index
+  sm.db.PutInt(METADATA, "me", me)
+  sm.me = me
+
+  // Enter peers
+  sm.db.PutStringList(METADATA, "servers", servers)
+
+  first_conf := new(Config)
+  first_conf.Groups = map[int64][]string{}
+  sm.DBPutConfig(0, first_conf)
+  sm.db.PutInt(METADATA, "num_configs", 1)
+
+  rpcs := rpc.NewServer()
+  rpcs.Register(sm)
+
+  sm.px = paxos.Make(servers, me, rpcs)
+  FinishStartServer(sm, servers, me, rpcs)
   return sm
 }
 
@@ -436,13 +447,7 @@ func StartServer(servers []string, me int) *ShardMaster {
 // form the fault-tolerant shardmaster service.
 // me is the index of the current server in servers[].
 // 
-func FinishStartServer(sm *ShardMaster, servers []string, me int) *ShardMaster {
-
-  rpcs := rpc.NewServer()
-  rpcs.Register(sm)
-
-  sm.px = paxos.Make(servers, me, rpcs)
-
+func FinishStartServer(sm *ShardMaster, servers []string, me int, rpcs *rpc.Server) *ShardMaster {
   os.Remove(servers[me])
   l, e := net.Listen("unix", servers[me]);
   if e != nil {

@@ -285,6 +285,17 @@ func TestBasic(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
+func KillAndRestart(sma []*ShardMaster, kvh []string) {
+  // Kills the servers and the paxos with them
+  for i := 0; i < len(sma); i ++ {
+    sma[i].Kill()
+  }
+  // Starts up
+  for i := 0; i < len(sma); i++ {
+    sma[i] = StartServerFromDB(kvh[i])
+  }
+}
+
 func TestRestart(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
@@ -307,6 +318,67 @@ func TestRestart(t *testing.T) {
   }
 
   fmt.Printf("Test: Restart ...\n")
+
+  cfa := make([]Config, 6)
+  cfa[0] = ck.Query(-1)
+
+  check(t, []int64{}, ck)
+
+  // Submits a few ops
+  var gid1 int64 = 1
+  ck.Join(gid1, []string{"x", "y", "z"})
+  check(t, []int64{gid1}, ck)
+  cfa[1] = ck.Query(-1)
+
+  var gid2 int64 = 2
+  ck.Join(gid2, []string{"a", "b", "c"})
+  check(t, []int64{gid1,gid2}, ck)
+  cfa[2] = ck.Query(-1)
+
+  ck.Join(gid2, []string{"a", "b", "c"})
+  check(t, []int64{gid1,gid2}, ck)
+  cfa[3] = ck.Query(-1)
+
+  // Kill and restart
+  KillAndRestart(sma, kvh)
+
+  // Runs some query ops
+  cfx := ck.Query(-1)
+  sa1 := cfx.Groups[gid1]
+  if len(sa1) != 3 || sa1[0] != "x" || sa1[1] != "y" || sa1[2] != "z" {
+    t.Fatal("wrong servers for gid %v: %v\n", gid1, sa1)
+  }
+  sa2 := cfx.Groups[gid2]
+  if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
+    t.Fatal("wrong servers for gid %v: %v\n", gid2, sa2)
+  }
+
+  fmt.Printf("  ... Passed\n")
+}
+
+
+func TestMoreRestart(t *testing.T) {
+  runtime.GOMAXPROCS(4)
+
+  const nservers = 3
+  var sma []*ShardMaster = make([]*ShardMaster, nservers)
+  var kvh []string = make([]string, nservers)
+  defer cleanup(sma)
+
+  for i := 0; i < nservers; i++ {
+    kvh[i] = port("basic", i)
+  }
+  for i := 0; i < nservers; i++ {
+    sma[i] = StartServer(kvh, i)
+  }
+
+  ck := MakeClerk(kvh)
+  var cka [nservers]*Clerk
+  for i := 0; i < nservers; i++ {
+    cka[i] = MakeClerk([]string{kvh[i]})
+  }
+
+  fmt.Printf("Test: Basic leave/join ...\n")
 
   cfa := make([]Config, 6)
   cfa[0] = ck.Query(-1)
@@ -336,8 +408,176 @@ func TestRestart(t *testing.T) {
   if len(sa2) != 3 || sa2[0] != "a" || sa2[1] != "b" || sa2[2] != "c" {
     t.Fatal("wrong servers for gid %v: %v\n", gid2, sa2)
   }
+
+  KillAndRestart(sma, kvh) // RESTART ###########################
+
+  ck.Leave(gid1)
+  check(t, []int64{gid2}, ck)
+  cfa[4] = ck.Query(-1)
+
+  ck.Leave(gid1)
+  check(t, []int64{gid2}, ck)
+  cfa[5] = ck.Query(-1)
+
+  fmt.Printf("  ... Passed\n")
+
+  fmt.Printf("Test: Historical queries ...\n")
+
+  for i := 0; i < len(cfa); i++ {
+    c := ck.Query(cfa[i].Num)
+    if c.Num != cfa[i].Num {
+      t.Fatalf("historical Num wrong")
+    }
+    if c.Shards != cfa[i].Shards {
+      t.Fatalf("historical Shards wrong")
+    }
+    if len(c.Groups) != len(cfa[i].Groups) {
+      t.Fatalf("number of historical Groups is wrong")
+    }
+    for gid, sa := range c.Groups {
+      sa1, ok := cfa[i].Groups[gid]
+      if ok == false || len(sa1) != len(sa) {
+        t.Fatalf("historical len(Groups) wrong")
+      }
+      if ok && len(sa1) == len(sa) {
+        for j := 0; j < len(sa); j++ {
+          if sa[j] != sa1[j] {
+            t.Fatalf("historical Groups wrong")
+          }
+        }
+      }
+    }
+  }
+
+  fmt.Printf("  ... Passed\n")
+
+  KillAndRestart(sma, kvh)
+
+  fmt.Printf("Test: Move ...\n")
+  {
+    var gid3 int64 = 503
+    ck.Join(gid3, []string{"3a", "3b", "3c"})
+    var gid4 int64 = 504
+    ck.Join(gid4, []string{"4a", "4b", "4c"})
+    for i := 0; i < NShards; i++ {
+      cf := ck.Query(-1)
+      if i < NShards / 2 {
+        ck.Move(i, gid3)
+        if cf.Shards[i] != gid3 {
+          cf1 := ck.Query(-1)
+          if cf1.Num <= cf.Num {
+            t.Fatalf("Move should increase Config.Num")
+          }
+        }
+      } else {
+        ck.Move(i, gid4)
+        if cf.Shards[i] != gid4 {
+          cf1 := ck.Query(-1)
+          if cf1.Num <= cf.Num {
+            t.Fatalf("Move should increase Config.Num")
+          }
+        }
+      }
+    }
+    KillAndRestart(sma, kvh)
+    cf2 := ck.Query(-1)
+    for i := 0; i < NShards; i++ {
+      if i < NShards / 2 {
+        if cf2.Shards[i] != gid3 {
+          t.Fatalf("expected shard %v on gid %v actually %v",
+                   i, gid3, cf2.Shards[i])
+        }
+      } else {
+        if cf2.Shards[i] != gid4 {
+          t.Fatalf("expected shard %v on gid %v actually %v",
+                   i, gid4, cf2.Shards[i])
+        }
+      }
+    }
+    ck.Leave(gid3)
+    ck.Leave(gid4)
+  }
+  fmt.Printf("  ... Passed\n")
+
+  fmt.Printf("Test: Concurrent leave/join ...\n")
+
+  KillAndRestart(sma, kvh)
+
+  const npara = 10
+  gids := make([]int64, npara)
+  var ca [npara]chan bool
+  for xi := 0; xi < npara; xi++ {
+    gids[xi] = int64(xi+1)
+    ca[xi] = make(chan bool)
+    go func(i int) {
+      defer func() { ca[i] <- true }()
+      var gid int64 = gids[i]
+      cka[(i+0)%nservers].Join(gid+1000, []string{"a", "b", "c"})
+      cka[(i+0)%nservers].Join(gid, []string{"a", "b", "c"})
+      cka[(i+1)%nservers].Leave(gid+1000)
+    }(xi)
+  }
+
+  KillAndRestart(sma, kvh)
+  for i := 0; i < npara; i++ {
+    <- ca[i]
+  }
+  check(t, gids, ck)
+
+  fmt.Printf("  ... Passed\n")
+
+  fmt.Printf("Test: Min advances after joins ...\n")
+
+  for i, sm := range(sma) {
+      if sm.px.Min() <= 0 {
+          t.Fatalf("Min() for %s did not advance", kvh[i])
+      }
+  }
+
+  fmt.Printf("  ... Passed\n")
+
+  fmt.Printf("Test: Minimal transfers after joins ...\n")
+
+  c1 := ck.Query(-1)
+  for i := 0; i < 5; i++ {
+
+    KillAndRestart(sma, kvh)
+    ck.Join(int64(npara+1+i), []string{"a","b","c"})
+  }
+  c2 := ck.Query(-1)
+  for i := int64(1); i <= npara; i++ {
+    for j := 0; j < len(c1.Shards); j++ {
+      if c2.Shards[j] == i {
+        if c1.Shards[j] != i {
+          t.Fatalf("non-minimal transfer after Join()s")
+        }
+      }
+    }
+  }
+
+  fmt.Printf("  ... Passed\n")
+
+  fmt.Printf("Test: Minimal transfers after leaves ...\n")
+
+  for i := 0; i < 5; i++ {
+    KillAndRestart(sma, kvh)
+    ck.Leave(int64(npara+1+i))
+  }
+  c3 := ck.Query(-1)
+  for i := int64(1); i <= npara; i++ {
+    for j := 0; j < len(c1.Shards); j++ {
+      if c2.Shards[j] == i {
+        if c3.Shards[j] != i {
+          t.Fatalf("non-minimal transfer after Leave()s")
+        }
+      }
+    }
+  }
+
   fmt.Printf("  ... Passed\n")
 }
+
+
 
 func TestUnreliable(t *testing.T) {
   runtime.GOMAXPROCS(4)
@@ -383,7 +623,7 @@ func TestUnreliable(t *testing.T) {
     }(xi)
   }
   for i := 0; i < npara; i++ {
-    <- ca[i]
+    <-ca[i]
   }
   check(t, gids, ck)
 

@@ -236,7 +236,7 @@ func TestRestart(t *testing.T) {
 
   // Start them all up from DB
   for i := 0; i < npaxos; i++ {
-    pxa[i] = MakeFromDB(pxh[i])
+    pxa[i] = MakeFromDB(pxh[i], nil)
   }
 
   pxa[0].Start(1, "diditwork")
@@ -252,7 +252,7 @@ func TestRestart(t *testing.T) {
   }
 
   for i := 0; i < npaxos; i++ {
-    pxa[i] = MakeFromDB(pxh[i])
+    pxa[i] = MakeFromDB(pxh[i], nil)
   }
   pxa[0].Start(2, "diditwork2")
   pxa[0].Start(3, "diditwork3")
@@ -264,7 +264,7 @@ func TestRestart(t *testing.T) {
 
   time.Sleep(2 * time.Second)
 
-  pxa[3] = MakeFromDB(pxh[3])
+  pxa[3] = MakeFromDB(pxh[3], nil)
 
   time.Sleep(2 * time.Second)
 
@@ -280,13 +280,13 @@ func TestRestart(t *testing.T) {
     }
   }
 
-  pxa[0] = MakeFromDB(pxh[0])
-  pxa[1] = MakeFromDB(pxh[1])
+  pxa[0] = MakeFromDB(pxh[0], nil)
+  pxa[1] = MakeFromDB(pxh[1], nil)
   pxa[2].KillDisk()
   os.Remove(pxh[2])
   pxa[3].KillDisk()
   os.Remove(pxh[3])
-  pxa[4] = MakeFromDB(pxh[4])
+  pxa[4] = MakeFromDB(pxh[4], nil)
 
   pxa[0].Start(2, "mightwork")
   waitn(t, pxa, 2, npaxos-2)
