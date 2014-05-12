@@ -654,15 +654,16 @@ func TestFreshQuery(t *testing.T) {
     t.Fatalf("os.Rename() failed")
   }
   ck0 := MakeClerk([]string{portx})
-  time.Sleep(1000)
   ck1.Join(1001, []string{"a", "b", "c"})
-  time.Sleep(1000)
+  time.Sleep(5*time.Second)
   c := ck0.Query(-1)
+  time.Sleep(5*time.Second)
   _, ok := c.Groups[1001]
   if ok == false {
     t.Fatalf("Query(-1) produced a stale configuration")
   }
 
   fmt.Printf("  ... Passed\n")
+  time.Sleep(1)
   os.Remove(portx)
 }

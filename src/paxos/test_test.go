@@ -76,6 +76,10 @@ func cleanup(pxa []*Paxos) {
   DeleteDB()
 }
 
+
+
+
+
 func noTestSpeed(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
@@ -162,51 +166,71 @@ func TestBasic(t *testing.T) {
   fmt.Printf("  ... Passed\n")
 }
 
-func TestDeaf(t *testing.T) {
+
+func KillAndRestart(pxa []*Paxos, pxh []string) {
+  // Kills the servers and the paxos with them
+  for i := 0; i < len(pxa); i ++ {
+    if pxa[i] != nil {
+      pxa[i].Kill()
+    }
+  }
+  // Starts up
+  for i := 0; i < len(pxa); i++ {
+    pxa[i] = MakeFromDB(pxh[i], nil)
+  }
+}
+
+func TestMoreRestart(t *testing.T) {
   runtime.GOMAXPROCS(4)
 
-  const npaxos = 5
+  const npaxos = 3
   var pxa []*Paxos = make([]*Paxos, npaxos)
   var pxh []string = make([]string, npaxos)
   defer cleanup(pxa)
 
   for i := 0; i < npaxos; i++ {
-    pxh[i] = port("deaf", i)
+    pxh[i] = port("basic", i)
   }
   for i := 0; i < npaxos; i++ {
     pxa[i] = Make(pxh, i, nil)
   }
 
-  fmt.Printf("Test: Deaf proposer ...\n")
+  finished_test := false
+  go func() {
+    for !finished_test {
+      fmt.Println("Killing...")
+      time.Sleep(time.Duration((rand.Intn(1000)+2000))*time.Millisecond)
+      if !finished_test {
+        KillAndRestart(pxa, pxh)
+      }
+    }
+  }()
 
-  pxa[0].Start(0, "hello")
-  waitn(t, pxa, 0, npaxos)
-  fmt.Printf("1\n")
-  os.Remove(pxh[0])
-  os.Remove(pxh[npaxos-1])
+  curr_i := 10
+  go func() {
+    for !finished_test {
+      time.Sleep(750 * time.Millisecond)
+      if !finished_test {
+        pxa[1].Start(curr_i+2, 500)
+        pxa[0].Start(curr_i+1, 400)
+        pxa[1].Start(curr_i, 300)
+        fmt.Println(curr_i)
+      }
+    }
+  }()
 
-  pxa[1].Start(1, "goodbye")
-  waitmajority(t, pxa, 1)
-  fmt.Printf("2\n")
-  time.Sleep(1 * time.Second)
-  if ndecided(t, pxa, 1) != npaxos - 2 {
-    t.Fatalf("a deaf peer heard about a decision")
+  fmt.Printf("Test: Out-of-order instances ...\n")
+  for ; curr_i < 30; curr_i += 3 {
+    waitn(t, pxa, curr_i+2, npaxos)
+    waitn(t, pxa, curr_i+1, npaxos)
+    waitn(t, pxa, curr_i, npaxos)
+    fmt.Println(curr_i)
   }
-
-  fmt.Printf("3\n")
-  pxa[0].Start(1, "xxx")
-  waitn(t, pxa, 1, npaxos-1)
-  fmt.Printf("4\n")
-  time.Sleep(1 * time.Second)
-  if ndecided(t, pxa, 1) != npaxos - 1 {
-    t.Fatalf("a deaf peer heard about a decision")
-  }
-  time.Sleep(15 * time.Second)
-  pxa[npaxos-1].Start(1, "yyy")
-  waitn(t, pxa, 1, npaxos)
+  finished_test = true
 
   fmt.Printf("  ... Passed\n")
 }
+
 
 func TestRestart(t *testing.T) {
   runtime.GOMAXPROCS(4)
@@ -228,16 +252,8 @@ func TestRestart(t *testing.T) {
 
   // Kill all of them, leave DB's intact
   fmt.Printf("Test: Kill all and restart ...\n")
-  for i := 0; i < len(pxa); i++ {
-    if pxa[i] != nil {
-      pxa[i].Kill()
-    }
-  }
 
-  // Start them all up from DB
-  for i := 0; i < npaxos; i++ {
-    pxa[i] = MakeFromDB(pxh[i], nil)
-  }
+  KillAndRestart(pxa, pxh)
 
   pxa[0].Start(1, "diditwork")
   waitn(t, pxa, 1, npaxos)

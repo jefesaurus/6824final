@@ -20,15 +20,12 @@ var opts = &db.WriteOptions{Sync: true}
 
 type Table byte
 
-const (
-  METADATA = 1
-  STORAGE = 2
-)
 
 type DBClerk struct {
   filepath string
   mu sync.Mutex
   db *leveldb.DB
+  batch *leveldb.Batch
   isbatching bool
 }
 
@@ -49,10 +46,16 @@ func (ck *DBClerk) Close() {
 
 func (ck *DBClerk) PutString(table Table, key string, value string) {
   table_key := append([]byte{byte(table)}, []byte(key)...)
-  err := ck.db.Set(table_key, []byte(value), opts)
-	if err != nil {
-		println(fmt.Sprintf("Failed put(%s, %s): %v", key, value, err))
-	}
+  ck.mu.Lock()
+  defer ck.mu.Unlock()
+  if ck.isbatching {
+    ck.batch.Set(table_key, []byte(value))
+  } else {
+    err := ck.db.Set(table_key, []byte(value), opts)
+	  if err != nil {
+		  println(fmt.Sprintf("Failed put(%s, %s): %v", key, value, err))
+	  }
+  }
 }
 
 func (ck *DBClerk) BatchPutString(table Table, key string, value string, batch *leveldb.Batch) {
@@ -68,16 +71,26 @@ func (ck *DBClerk) GetString(table Table, key string) (string, bool) {
 	}
   return string(bytes), (err == nil)
 }
+func (ck *DBClerk) QuietGetString(table Table, key string) (string, bool) {
+  table_key := append([]byte{byte(table)}, []byte(key)...)
+  bytes, err := ck.db.Get(table_key, nil)
+  return string(bytes), (err == nil)
+}
 
 func (ck *DBClerk) PutInt(table Table, key string, value int) {
   buf := make([]byte, 8)
   _ = binary.PutVarint(buf, int64(value))
-
   table_key := append([]byte{byte(table)}, []byte(key)...)
-  err := ck.db.Set(table_key, buf, opts)
-	if err != nil {
-		println(fmt.Sprintf("Failed put(%s, %s): %v", key, value, err))
-	}
+  ck.mu.Lock()
+  defer ck.mu.Unlock()
+  if ck.isbatching {
+    ck.batch.Set(table_key, buf)
+  } else {
+    err := ck.db.Set(table_key, buf, opts)
+	  if err != nil {
+		  println(fmt.Sprintf("Failed put(%s, %s): %v", key, value, err))
+	  }
+  }
 }
 
 func (ck *DBClerk) GetInt(table Table, key string) (int, bool) {
@@ -148,6 +161,28 @@ func (ck *DBClerk) GetStringList(table Table, key string) ([]string, bool) {
   }
 }
 
+func (ck *DBClerk) StartBatch() {
+  ck.mu.Lock()
+  defer ck.mu.Unlock()
+  if ck.isbatching {
+    log.Fatal("Attempting to start batch while already batching")
+  }
+  ck.isbatching = true
+  ck.batch = new(leveldb.Batch)
+}
+
+func (ck *DBClerk) EndBatch() {
+  ck.mu.Lock()
+  defer ck.mu.Unlock()
+  if !ck.isbatching {
+    log.Fatal("Attempting to end batch while not batching")
+  }
+  ck.isbatching = false
+  err := ck.db.Apply(*ck.batch, opts)
+  if err != nil {
+    log.Fatal(err)
+  }
+}
 
 func (ck *DBClerk) ApplyBatch(b leveldb.Batch) {
   err := ck.db.Apply(b, opts)
@@ -164,7 +199,13 @@ func (ck *DBClerk) PutStruct(table Table, key string, o interface{}) {
   if err != nil {
     log.Fatal(err)
   }
-  err = ck.db.Set(table_key, buf.Bytes(), opts)
+  ck.mu.Lock()
+  defer ck.mu.Unlock()
+  if ck.isbatching {
+    ck.batch.Set(table_key, buf.Bytes())
+  } else {
+    err = ck.db.Set(table_key, buf.Bytes(), opts)
+  }
   if err != nil {
     log.Fatal(err)
   }
@@ -187,171 +228,17 @@ func (ck *DBClerk) GetStruct(table Table, key string, o interface{}) bool {
 
 func (ck *DBClerk) Delete(table Table, key string) {
   table_key := append([]byte{byte(table)}, []byte(key)...)
-  err := ck.db.Delete(table_key, opts)
-  if err != nil {
-    log.Fatal("COULDNt DELETE")
-  }
-}
-
-func test() {
-  db_path := "/tmp/testdb"
-  ck := GetDatabase(db_path)
-
-	key := "testkey"
-  data := "testvalue1"
-  data2 := "testvaluea"
-
-  ck.PutString(METADATA, key, data)
-  ck.PutString(STORAGE, key, data2)
-  ck.Close()
-
-  ck = GetDatabase(db_path)
-  val, _ := ck.GetString(METADATA, key)
-
-  if val != data {
-    println("Results do not match")
-  }
-  println(val)
-
-
-  val, _ = ck.GetString(STORAGE, key)
-  if val != data2 {
-    println("Results do not match")
-  }
-  println(val)
-
-
-  val, _ = ck.GetString(METADATA, key)
-
-  if val != data {
-    println("Results do not match")
-  }
-  println(val)
-
-  ck.Close()
-  ck = GetDatabase(db_path)
-  data = "testvalue2"
-  ck.PutString(METADATA, key, data)
-  ck.Close()
-  ck = GetDatabase(db_path)
-  val, _ = ck.GetString(METADATA, key)
-
-  if val != data {
-    println("Results do not match")
-  }
-  println(val)
-
-	fmt.Printf("DONE.\n")
-}
-
-func testintlist() {
-  db_path := "/tmp/testdb"
-  ck := GetDatabase(db_path)
-
-	key := "testkey"
-  data := []int{4,3,2,1}
-
-  ck.PutIntList(METADATA, key, data)
-  ck.Close()
-
-  ck = GetDatabase(db_path)
-  val, _ := ck.GetIntList(METADATA, key)
-
-  for i := 0; i < len(data); i ++ {
-    if (val[i] != data[i]) {
-      println("Int lists do not match")
+  ck.mu.Lock()
+  defer ck.mu.Unlock()
+  if ck.isbatching {
+    ck.batch.Delete(table_key)
+  } else {
+    err := ck.db.Delete(table_key, opts)
+    if err != nil {
+      log.Fatal(err)
     }
   }
-  ck.Close()
 }
-
-func test_speed(iters int) {
-  db_path := "/tmp/testdb"
-  ck := GetDatabase(db_path)
-
-  for i := 0; i < iters; i ++ {
-    ck.PutInt(METADATA, fmt.Sprintf("k: %d", i), i)
-    println(fmt.Sprintf("val-written: %d", i))
-  }
-
-  for i := 0; i < iters; i ++ {
-    v, _ := ck.GetInt(METADATA, fmt.Sprintf("k: %d", i))
-    println(fmt.Sprintf("val-read: %d", v))
-  }
-  ck.Close()
-}
-
-func test_batch() {
-  db_path := "/tmp/testdbb"
-  ck := GetDatabase(db_path)
-  var b leveldb.Batch
-  ck.BatchPutString(METADATA, "key1", "val1", &b)
-  ck.BatchPutString(METADATA, "key2", "val2", &b)
-  ck.ApplyBatch(b)
-
-  val, exists := ck.GetString(METADATA, "key1")
-  if !exists {
-    println("key1 didn't exist1")
-  }
-  println(val)
-
-  val, exists = ck.GetString(METADATA, "key2")
-  if !exists {
-    println("key2 didnt' exist2")
-  }
-  println(val)
-}
-
-type Instanz struct {
-  PrepareNum int64 // Highest prepare
-  AcceptNum int64 // Highest accept number
-  AcceptVal interface{} // Highest accept value
-  Decided bool
-}
-
-func test_struct() {
-  inst := &Instanz{55, 66, "asdf", true}
-
-  db_path := "/tmp/testdbb1"
-  ck := GetDatabase(db_path)
-  ck.PutStruct(METADATA, "first", inst)
-  ck.Close()
-  ck = GetDatabase(db_path)
-  inst2 := new(Instanz)
-  ck.GetStruct(METADATA, "first", inst2)
-  println(inst2.AcceptVal.(string))
-  println(inst2.AcceptNum)
-  println(inst2.PrepareNum)
-}
-
-func test_map() {
-  var m = map[string]bool{"one":true, "two":false, "three":true}
-  db_path := "/tmp/testdbb1"
-  ck := GetDatabase(db_path)
-  ck.PutStruct(METADATA, "first", m)
-  ck.Close()
-
-  ck = GetDatabase(db_path)
-  var dMap map[string]bool
-
-  found := ck.GetStruct(METADATA, "first", &dMap)
-  if !found {
-    log.Fatal("first")
-  }
-  for k, v := range dMap {
-    print(k + ", ")
-    println(v)
-  }
-}
-
-
-func main() {
-  //test_batch()
-  //test_speed(500)
-  //test_struct()
-  test_map()
-}
-
 
 func p(r []byte, e error) {
   if e != nil {
@@ -359,5 +246,3 @@ func p(r []byte, e error) {
   }
   println(string(r))
 }
-
-

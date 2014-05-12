@@ -70,6 +70,8 @@ type Paxos struct {
   LeaderLock sync.RWMutex
   NewLeader bool
   MajorityMax int
+
+  batchlock sync.Mutex
 }
 
 func call(srv string, name string, args interface{}, reply interface{}) bool {
@@ -846,16 +848,24 @@ func (px *Paxos) GetOpenInstances() map[int]bool {
 }
 
 func (px *Paxos) AddOpenInstance(seq int) {
+  px.batchlock.Lock()
+  defer px.batchlock.Unlock()
+  px.db.StartBatch()
   current_instances := px.GetOpenInstances()
   current_instances[seq] = true
   px.db.PutStruct(METADATA, "openinstances", current_instances)
+  px.db.EndBatch()
 }
 
 func (px *Paxos) DeleteInstance(seq int) {
+  px.batchlock.Lock()
+  defer px.batchlock.Unlock()
+  px.db.StartBatch()
   px.db.Delete(METADATA, fmt.Sprintf("instance%d",seq))
   current_instances := px.GetOpenInstances()
   delete(current_instances, seq)
   px.db.PutStruct(METADATA, "openinstances", current_instances)
+  px.db.EndBatch()
 }
 
 

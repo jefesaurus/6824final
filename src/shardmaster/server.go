@@ -27,10 +27,11 @@ type ShardMaster struct {
   db_path string
 
   px *paxos.Paxos
-  pxMu sync.Mutex
 
   configs []Config // indexed by config num
   queryReplies map[int]Config // Keep track of replies
+
+  batchlock sync.Mutex
 }
 
 const (
@@ -68,7 +69,6 @@ func (sm *ShardMaster) Move(args *MoveArgs, reply *MoveReply) error {
 func (sm *ShardMaster) Query(args *QueryArgs, reply *QueryReply) error {
   thisOp := Op{Opcode: QUERY, Num: args.Num}
   seq := sm.StartAndFinishOp(thisOp)
-  //config := sm.queryReplies[seq]
   config := sm.GetReply(seq)
   reply.Config = config
   return nil
@@ -264,16 +264,17 @@ func ArgRange(gids map[int64][]int) (int64,int64,int,int) {
 }
 
 func (sm *ShardMaster) GetConfig(config_num int) Config {
-  //mem_conf := sm.configs[config_num]
   db_conf := sm.DBGetConfig(config_num)
-  //CheckEq(&mem_conf, db_conf)
   return *db_conf
 }
 
 func (sm *ShardMaster) PutConfig(config_num int, conf *Config) {
-  //sm.configs = append(sm.configs, *conf)
+  sm.batchlock.Lock()
+  sm.db.StartBatch()
   sm.DBPutConfig(config_num, conf)
   sm.DBIncNumConfigs()
+  sm.db.EndBatch()
+  sm.batchlock.Unlock()
 }
 
 func CheckEq(a *Config, b *Config){
@@ -288,14 +289,11 @@ func CheckEq(a *Config, b *Config){
 }
 
 func (sm *ShardMaster) PutReply(seq int, conf *Config) {
-  //sm.queryReplies[seq] = *conf
   sm.DBPutReply(seq, conf)
 }
 
 func (sm *ShardMaster) GetReply(seq int) Config {
-  //mem_conf := sm.queryReplies[seq]
   db_conf := sm.DBGetReply(seq)
-  //CheckEq(&mem_conf, db_conf)
   return *db_conf
 }
 

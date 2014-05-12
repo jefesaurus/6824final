@@ -62,6 +62,7 @@ func (ck *Clerk) Query(num int) Config {
       if ok {
         return reply.Config
       }
+      time.Sleep(100 * time.Millisecond)
     }
     time.Sleep(100 * time.Millisecond)
   }
