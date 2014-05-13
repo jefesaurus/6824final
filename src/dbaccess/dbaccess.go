@@ -16,7 +16,7 @@ import (
 )
 
 // Sync: false corrupts the DB
-var opts = &db.WriteOptions{Sync: true}
+var opts = &db.WriteOptions{Sync: false}
 
 type Table byte
 
